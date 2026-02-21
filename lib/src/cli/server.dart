@@ -90,26 +90,112 @@ class SessionInfo {
   }) : createdAt = createdAt ?? DateTime.now();
 
   Map<String, dynamic> toJson() => {
-        'id': id,
-        'name': name,
-        'project_path': projectPath,
-        'device_id': deviceId,
-        'port': port,
-        'vm_service_uri': vmServiceUri,
-        'created_at': createdAt.toIso8601String(),
-      };
+    'id': id,
+    'name': name,
+    'project_path': projectPath,
+    'device_id': deviceId,
+    'port': port,
+    'vm_service_uri': vmServiceUri,
+    'created_at': createdAt.toIso8601String(),
+  };
+}
+
+void _printCliError(String title, String message, {List<String>? fixes}) {
+  stderr.writeln('');
+  stderr.writeln('❌ $title');
+  stderr.writeln('');
+  stderr.writeln(message);
+  stderr.writeln('');
+
+  if (fixes != null && fixes.isNotEmpty) {
+    stderr.writeln('🔧 Suggested Fixes:');
+    for (final fix in fixes) {
+      stderr.writeln('   • $fix');
+    }
+    stderr.writeln('');
+  }
+}
+
+Future<void> _validateFlutterEnvironment() async {
+  try {
+    final result = await Process.run('flutter', ['--version']);
+
+    if (result.exitCode != 0) {
+      _printCliError(
+        'Flutter SDK not found',
+        'Flutter command is not available in PATH.',
+        fixes: [
+          'Install Flutter SDK from https://flutter.dev',
+          'Ensure Flutter is added to your system PATH',
+          'Run: flutter doctor',
+        ],
+      );
+      exit(1);
+    }
+
+    final versionOutput = result.stdout.toString();
+    final match = RegExp(
+      r'Flutter (\d+)\.(\d+)\.(\d+)',
+    ).firstMatch(versionOutput);
+
+    if (match != null) {
+      final major = int.parse(match.group(1)!);
+      if (major < 3) {
+        _printCliError(
+          'Unsupported Flutter version detected',
+          'flutter-skill requires Flutter 3.x or newer.',
+          fixes: [
+            'Run: flutter upgrade',
+            'Or install correct version using FVM',
+          ],
+        );
+        exit(1);
+      }
+    }
+
+    // Run flutter doctor to detect missing tools
+    final doctor = await Process.run('flutter', ['doctor']);
+
+    final doctorOutput = doctor.stdout.toString();
+
+    if (doctorOutput.contains('No Xcode') ||
+        doctorOutput.contains('Android toolchain')) {
+      _printCliError(
+        'Missing platform tools detected',
+        'Required iOS or Android build tools are not configured.',
+        fixes: [
+          'Install Xcode (for macOS)',
+          'Install Android Studio',
+          'Run: flutter doctor',
+          'Follow the instructions shown',
+        ],
+      );
+    }
+  } catch (_) {
+    // Ignore if flutter command fails unexpectedly
+  }
 }
 
 Future<void> runServer(List<String> args) async {
+  // Validate environment before starting
+  await _validateFlutterEnvironment();
+
+  _checkForUpdates();
   // Check for updates in background
   _checkForUpdates();
 
   // Acquire lock to prevent multiple instances
   final lockFile = await _acquireLock();
   if (lockFile == null) {
-    stderr.writeln('ERROR: Another flutter-skill server is already running.');
-    stderr.writeln(
-        'If you believe this is an error, delete: ~/.flutter_skill.lock');
+    _printCliError(
+      'Another flutter-skill server is already running',
+      'A lock file was found at ~/.flutter_skill.lock.',
+      fixes: [
+        'Stop the existing server process',
+        'Or delete the lock file manually:',
+        '   ~/.flutter_skill.lock',
+      ],
+    );
     exit(1);
   }
 
@@ -122,7 +208,8 @@ Future<void> runServer(List<String> args) async {
     // Parse flags
     for (final arg in args) {
       if (arg.startsWith('--bridge-port=')) {
-        final port = int.tryParse(arg.substring('--bridge-port='.length)) ??
+        final port =
+            int.tryParse(arg.substring('--bridge-port='.length)) ??
             bridgeDefaultPort;
         await server.startBridgeListener(port);
       } else if (arg == '--bridge-port') {
@@ -154,9 +241,7 @@ Future<void> runServer(List<String> args) async {
 Future<void> _checkForUpdates() async {
   try {
     final response = await http
-        .get(
-          Uri.parse('https://pub.dev/api/packages/flutter_skill'),
-        )
+        .get(Uri.parse('https://pub.dev/api/packages/flutter_skill'))
         .timeout(const Duration(seconds: 5));
 
     if (response.statusCode == 200) {
@@ -167,21 +252,29 @@ Future<void> _checkForUpdates() async {
           _isNewerVersion(latestVersion, currentVersion)) {
         stderr.writeln('');
         stderr.writeln(
-            '╔══════════════════════════════════════════════════════════╗');
+          '╔══════════════════════════════════════════════════════════╗',
+        );
         stderr.writeln(
-            '║  flutter-skill v$latestVersion available (current: v$currentVersion)');
+          '║  flutter-skill v$latestVersion available (current: v$currentVersion)',
+        );
         stderr.writeln(
-            '║                                                          ║');
+          '║                                                          ║',
+        );
         stderr.writeln(
-            '║  Update with:                                            ║');
+          '║  Update with:                                            ║',
+        );
         stderr.writeln(
-            '║    dart pub global activate flutter_skill                ║');
+          '║    dart pub global activate flutter_skill                ║',
+        );
         stderr.writeln(
-            '║  Or:                                                     ║');
+          '║  Or:                                                     ║',
+        );
         stderr.writeln(
-            '║    npm update -g flutter-skill                       ║');
+          '║    npm update -g flutter-skill                       ║',
+        );
         stderr.writeln(
-            '╚══════════════════════════════════════════════════════════╝');
+          '╚══════════════════════════════════════════════════════════╝',
+        );
         stderr.writeln('');
       }
     }
@@ -238,8 +331,8 @@ class FlutterMcpServer {
   AppDriver? get _client => _activeSessionId != null
       ? _clients[_activeSessionId]
       : _clients.values.isNotEmpty
-          ? _clients.values.first
-          : null;
+      ? _clients.values.first
+      : null;
 
   Process? _flutterProcess;
 
@@ -320,8 +413,9 @@ class FlutterMcpServer {
             vmServiceUri: 'ws://127.0.0.1:$port',
           );
           _activeSessionId = sessionId;
-          stderr
-              .writeln('Browser client connected — session $sessionId created');
+          stderr.writeln(
+            'Browser client connected — session $sessionId created',
+          );
         } catch (e) {
           stderr.writeln('Failed to initialize web bridge session: $e');
         }
@@ -330,16 +424,33 @@ class FlutterMcpServer {
     listener.onClientDisconnected = () {
       stderr.writeln('Browser client disconnected from bridge listener');
     };
-    await listener.start(port);
+    try {
+      await listener.start(port);
+    } on SocketException catch (e) {
+      if (e.message.contains('Address already in use')) {
+        _printCliError(
+          'Port $port is already in use',
+          'Another process is already using this port.',
+          fixes: [
+            'Run: lsof -i :$port',
+            'Kill the process using that port',
+            'Or start server on different port:',
+            '   flutter-skill --bridge-port=9090',
+          ],
+        );
+        exit(1);
+      } else {
+        rethrow;
+      }
+    }
     _webBridgeListener = listener;
     stderr.writeln('Bridge listener started on ws://127.0.0.1:$port');
   }
 
   Future<void> run() async {
-    stdin
-        .transform(utf8.decoder)
-        .transform(const LineSplitter())
-        .listen((line) async {
+    stdin.transform(utf8.decoder).transform(const LineSplitter()).listen((
+      line,
+    ) async {
       if (line.trim().isEmpty) return;
       try {
         final request = jsonDecode(line);
@@ -400,7 +511,7 @@ class FlutterMcpServer {
               'swipe',
               'go_back',
               'press_key',
-              'screenshot'
+              'screenshot',
             ].contains(name)) {
           _recordedSteps.add({
             'step': _recordedSteps.length + 1,
@@ -477,7 +588,8 @@ class FlutterMcpServer {
     if (msg.contains('connection lost')) return true;
     if (msg.contains('timed out') || msg.contains('timeout')) return true;
     if (msg.contains('socket') &&
-        (msg.contains('closed') || msg.contains('error'))) return true;
+        (msg.contains('closed') || msg.contains('error')))
+      return true;
     return false;
   }
 
@@ -485,7 +597,8 @@ class FlutterMcpServer {
   Future<bool> _attemptAutoReconnect() async {
     if (_lastConnectionUri != null) {
       stderr.writeln(
-          'Attempting auto-reconnect to $_lastConnectionUri (port: $_lastConnectionPort)...');
+        'Attempting auto-reconnect to $_lastConnectionUri (port: $_lastConnectionPort)...',
+      );
       try {
         final client = _clients[_activeSessionId];
         if (client is BridgeDriver) {
@@ -517,6 +630,18 @@ class FlutterMcpServer {
         final result = await _executeToolInner(name, args);
         return result;
       } catch (e) {
+        if (e is SocketException) {
+          _printCliError(
+            'Network connection error',
+            e.message,
+            fixes: [
+              'Check internet connection',
+              'Verify target app is running',
+              'Ensure correct port is used',
+            ],
+          );
+        }
+
         if (attempt < maxRetries && _isRetryableError(e)) {
           stderr.writeln('Retryable error on attempt ${attempt + 1}: $e');
           // Try auto-reconnect on connection errors
@@ -537,7 +662,9 @@ class FlutterMcpServer {
   }
 
   Future<dynamic> _executeToolInner(
-      String name, Map<String, dynamic> args) async {
+    String name,
+    Map<String, dynamic> args,
+  ) async {
     // Download file tool (platform-independent)
     if (name == 'download_file') {
       final url = args['url'] as String?;
@@ -557,13 +684,13 @@ class FlutterMcpServer {
               'success': true,
               'path': savePath,
               'size_bytes': response.bodyBytes.length,
-              'status_code': response.statusCode
+              'status_code': response.statusCode,
             };
           } else {
             return {
               'success': false,
               'error': 'HTTP ${response.statusCode}',
-              'status_code': response.statusCode
+              'status_code': response.statusCode,
             };
           }
         } finally {
@@ -587,7 +714,7 @@ class FlutterMcpServer {
       return {
         'success': false,
         'error': 'Operation not found or already completed',
-        'active_operations': _activeCancellables.keys.toList()
+        'active_operations': _activeCancellables.keys.toList(),
       };
     }
 
@@ -635,9 +762,10 @@ class FlutterMcpServer {
           ? {"plugins": [], "message": "No plugins loaded"}
           : {
               "plugins": _pluginTools
-                  .map((p) =>
-                      {"name": p['name'], "description": p['description']})
-                  .toList()
+                  .map(
+                    (p) => {"name": p['name'], "description": p['description']},
+                  )
+                  .toList(),
             };
     }
 
@@ -671,7 +799,9 @@ class FlutterMcpServer {
 
   /// Execute a batch of actions in sequence
   Future<Map<String, dynamic>> _executeBatch(
-      Map<String, dynamic> args, FlutterSkillClient client) async {
+    Map<String, dynamic> args,
+    FlutterSkillClient client,
+  ) async {
     final actions = args['actions'] as List<dynamic>;
     final stopOnFailure = args['stop_on_failure'] ?? true;
 
@@ -696,8 +826,10 @@ class FlutterMcpServer {
 
         switch (actionName) {
           case 'tap':
-            final tapResult =
-                await client.tap(key: action['key'], text: action['text']);
+            final tapResult = await client.tap(
+              key: action['key'],
+              text: action['text'],
+            );
             if (tapResult['success'] != true) {
               throw Exception(tapResult['message'] ?? "Element not found");
             }
@@ -706,7 +838,9 @@ class FlutterMcpServer {
 
           case 'enter_text':
             final enterResult = await client.enterText(
-                action['key'], action['text'] ?? action['value']);
+              action['key'],
+              action['text'] ?? action['value'],
+            );
             if (enterResult['success'] != true) {
               throw Exception(enterResult['message'] ?? "TextField not found");
             }
@@ -750,7 +884,8 @@ class FlutterMcpServer {
             final expected = action['expected'];
             if (actual != expected) {
               throw Exception(
-                  "Text mismatch: expected '$expected', got '$actual'");
+                "Text mismatch: expected '$expected', got '$actual'",
+              );
             }
             result = "Text matches";
             break;
@@ -758,7 +893,10 @@ class FlutterMcpServer {
           case 'long_press':
             final duration = action['duration'] ?? 500;
             await client.longPress(
-                key: action['key'], text: action['text'], duration: duration);
+              key: action['key'],
+              text: action['text'],
+              duration: duration,
+            );
             result = "Long pressed";
             break;
 
@@ -927,6 +1065,9 @@ class FlutterMcpServer {
    • Ensure flutter_skill dependency is in your Flutter project
    • Verify FlutterSkillBinding.ensureInitialized() is called in main()
    • Run flutter with: --vm-service-port=50000 for consistent connections
+   • Ensure flutter_skill dependency is added in pubspec.yaml
+  • Run: flutter pub get
+  • Make sure FlutterSkillBinding.ensureInitialized() is called in main()
 ''');
     }
 
@@ -1007,11 +1148,13 @@ class FlutterMcpServer {
 
   void _sendError(dynamic id, int code, String message) {
     if (id == null) return;
-    stdout.writeln(jsonEncode({
-      "jsonrpc": "2.0",
-      "id": id,
-      "error": {"code": code, "message": message},
-    }));
+    stdout.writeln(
+      jsonEncode({
+        "jsonrpc": "2.0",
+        "id": id,
+        "error": {"code": code, "message": message},
+      }),
+    );
   }
 
   /// Detect if iOS simulator or Android emulator is running
@@ -1089,7 +1232,8 @@ class _ServerSkillEngine implements SkillEngine {
     return ToolRegistry.getFilteredTools(
       hasCdp: _server._cdpDriver != null,
       hasBridge: _server._client is BridgeDriver && _server._cdpDriver == null,
-      hasFlutter: _server._client is FlutterSkillClient &&
+      hasFlutter:
+          _server._client is FlutterSkillClient &&
           _server._client is! BridgeDriver,
       hasConnection: isConnected,
       pluginTools: pluginTools.isNotEmpty ? pluginTools : _server._pluginTools,
@@ -1121,26 +1265,28 @@ class _ServerSkillEngine implements SkillEngine {
     String? proxy,
     bool ignoreSsl = false,
     int maxTabs = 20,
-  }) =>
-      executeTool('connect_cdp', {
-        'port': port,
-        if (url != null) 'url': url,
-        'launch_chrome': launchChrome,
-        if (chromePath != null) 'chrome_path': chromePath,
-        'headless': headless,
-        if (proxy != null) 'proxy': proxy,
-        'ignore_ssl': ignoreSsl,
-        'max_tabs': maxTabs,
-      });
+  }) => executeTool('connect_cdp', {
+    'port': port,
+    if (url != null) 'url': url,
+    'launch_chrome': launchChrome,
+    if (chromePath != null) 'chrome_path': chromePath,
+    'headless': headless,
+    if (proxy != null) 'proxy': proxy,
+    'ignore_ssl': ignoreSsl,
+    'max_tabs': maxTabs,
+  });
 
   @override
   Future<void> connectBridge({String? host, int? port}) => executeTool(
-      'scan_and_connect',
-      {if (host != null) 'host': host, if (port != null) 'port': port});
+    'scan_and_connect',
+    {if (host != null) 'host': host, if (port != null) 'port': port},
+  );
 
   @override
   Future<void> connectFlutter({String? vmServiceUri}) => executeTool(
-      'connect_app', {if (vmServiceUri != null) 'uri': vmServiceUri});
+    'connect_app',
+    {if (vmServiceUri != null) 'uri': vmServiceUri},
+  );
 
   @override
   Future<void> scanAndConnect() => executeTool('scan_and_connect', {});
