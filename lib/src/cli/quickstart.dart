@@ -773,14 +773,17 @@ Future<String?> _findFlutter() async {
   if (inPath != null) return 'flutter';
 
   // Check common locations
-  final home = Platform.environment['HOME'] ?? '';
+  final home = Platform.environment['HOME'] ??
+      Platform.environment['USERPROFILE'];
   final candidates = [
-    '$home/development/flutter/bin/flutter',
-    '$home/flutter/bin/flutter',
-    '$home/.flutter/bin/flutter',
+    if (home != null) ...[
+      '$home/development/flutter/bin/flutter',
+      '$home/flutter/bin/flutter',
+      '$home/.flutter/bin/flutter',
+      '$home/snap/flutter/common/flutter/bin/flutter',
+      '$home/fvm/default/bin/flutter',
+    ],
     '/opt/flutter/bin/flutter',
-    '$home/snap/flutter/common/flutter/bin/flutter',
-    '$home/fvm/default/bin/flutter',
   ];
   for (final path in candidates) {
     if (await File(path).exists()) {

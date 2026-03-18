@@ -3,7 +3,9 @@ import 'package:flutter_test/flutter_test.dart';
 
 void main() {
   group('Lock Mechanism Tests', () {
-    final lockFilePath = '${Platform.environment['HOME']}/.flutter_skill.lock';
+    final home = Platform.environment['HOME'] ??
+        Platform.environment['USERPROFILE'];
+    final lockFilePath = '${home ?? "/tmp"}/.flutter_skill.lock';
     final lockFile = File(lockFilePath);
 
     tearDown(() async {

@@ -1041,7 +1041,8 @@ class FlutterMcpServer {
 
 /// Acquire a lock file to prevent multiple server instances
 Future<File?> _acquireLock() async {
-  final home = Platform.environment['HOME'];
+  final home = Platform.environment['HOME'] ??
+      Platform.environment['USERPROFILE'];
   if (home == null) return null;
 
   final lockFile = File('$home/.flutter_skill.lock');

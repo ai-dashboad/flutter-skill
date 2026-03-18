@@ -156,11 +156,14 @@ class WebBridgeProxy {
 
     // Read the SDK script — try common locations
     String? sdkSource;
+    final home = Platform.environment['HOME'] ??
+        Platform.environment['USERPROFILE'];
     final candidates = [
       // Relative to the flutter-skill package
       'sdks/web/flutter-skill.js',
       // npm global install
-      '${Platform.environment['HOME']}/.pub-cache/hosted/pub.dev/flutter_skill-latest/sdks/web/flutter-skill.js',
+      if (home != null)
+        '$home/.pub-cache/hosted/pub.dev/flutter_skill-latest/sdks/web/flutter-skill.js',
     ];
 
     for (final path in candidates) {

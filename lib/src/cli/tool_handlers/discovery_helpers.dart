@@ -43,11 +43,15 @@ extension _DiscoveryHelpers on FlutterMcpServer {
   }
 
   String _findAdb() {
+    final home = Platform.environment['HOME'] ??
+        Platform.environment['USERPROFILE'];
     final androidHome = Platform.environment['ANDROID_HOME'] ??
         Platform.environment['ANDROID_SDK_ROOT'] ??
-        '${Platform.environment['HOME']}/Library/Android/sdk';
-    final adbPath = '$androidHome/platform-tools/adb';
-    if (File(adbPath).existsSync()) return adbPath;
+        (home != null ? '$home/Library/Android/sdk' : null);
+    if (androidHome != null) {
+      final adbPath = '$androidHome/platform-tools/adb';
+      if (File(adbPath).existsSync()) return adbPath;
+    }
     return 'adb'; // fallback to PATH
   }
 
