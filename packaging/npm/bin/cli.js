@@ -122,8 +122,25 @@ function runNativeBinary(binaryPath) {
     args.push('server');
   }
 
-  const server = spawn(binaryPath, args, {
-    stdio: 'inherit'
+  // spawn() reports launch failures (ENOEXEC, EACCES, ENOENT, wrong-arch, ...)
+  // inconsistently across platforms/Node versions: some surface synchronously
+  // as a thrown exception from spawn() itself, others only asynchronously via
+  // the 'error' event. Without handling both, the failure is uncaught and
+  // crashes the process instead of ever reaching the Dart fallback.
+  let server;
+  try {
+    server = spawn(binaryPath, args, {
+      stdio: 'inherit'
+    });
+  } catch (err) {
+    console.error(`[flutter-skill] Native binary failed to launch (${err.code || err.message}), falling back to Dart runtime`);
+    runWithDart();
+    return;
+  }
+
+  server.on('error', (err) => {
+    console.error(`[flutter-skill] Native binary failed to launch (${err.code || err.message}), falling back to Dart runtime`);
+    runWithDart();
   });
 
   server.on('close', (code) => {

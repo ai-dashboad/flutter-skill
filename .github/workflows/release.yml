@@ -220,10 +220,8 @@ jobs:
         run: |
           cd binaries
           SHA256_ARM64=$(sha256sum flutter-skill-macos-arm64/flutter-skill-macos-arm64 | cut -d' ' -f1)
-          SHA256_X64=$(sha256sum flutter-skill-macos-x64/flutter-skill-macos-x64 | cut -d' ' -f1)
           SHA256_LINUX=$(sha256sum flutter-skill-linux-x64/flutter-skill-linux-x64 | cut -d' ' -f1)
           echo "sha256_arm64=$SHA256_ARM64" >> $GITHUB_OUTPUT
-          echo "sha256_x64=$SHA256_X64" >> $GITHUB_OUTPUT
           echo "sha256_linux=$SHA256_LINUX" >> $GITHUB_OUTPUT
 
       - name: Checkout Homebrew tap
@@ -237,7 +235,6 @@ jobs:
         run: |
           VERSION=${{ needs.prepare.outputs.version }}
           SHA256_ARM64=${{ steps.sha256.outputs.sha256_arm64 }}
-          SHA256_X64=${{ steps.sha256.outputs.sha256_x64 }}
           SHA256_LINUX=${{ steps.sha256.outputs.sha256_linux }}
 
           # Write the new formula
@@ -252,10 +249,6 @@ jobs:
               on_arm do
                 url "https://github.com/ai-dashboad/flutter-skill/releases/download/vVERSION_PLACEHOLDER/flutter-skill-macos-arm64"
                 sha256 "SHA256_ARM64_PLACEHOLDER"
-              end
-              on_intel do
-                url "https://github.com/ai-dashboad/flutter-skill/releases/download/vVERSION_PLACEHOLDER/flutter-skill-macos-x64"
-                sha256 "SHA256_X64_PLACEHOLDER"
               end
             end
 
@@ -298,7 +291,6 @@ jobs:
           # Replace placeholders
           sed -i "s/VERSION_PLACEHOLDER/${VERSION}/g" homebrew-tap/Formula/flutter-skill.rb
           sed -i "s/SHA256_ARM64_PLACEHOLDER/${SHA256_ARM64}/g" homebrew-tap/Formula/flutter-skill.rb
-          sed -i "s/SHA256_X64_PLACEHOLDER/${SHA256_X64}/g" homebrew-tap/Formula/flutter-skill.rb
           sed -i "s/SHA256_LINUX_PLACEHOLDER/${SHA256_LINUX}/g" homebrew-tap/Formula/flutter-skill.rb
 
       - name: Commit and push
@@ -319,9 +311,6 @@ jobs:
           - os: macos-latest
             arch: arm64
             artifact: flutter-skill-macos-arm64
-          - os: macos-13
-            arch: x64
-            artifact: flutter-skill-macos-x64
           - os: ubuntu-latest
             arch: x64
             artifact: flutter-skill-linux-x64
