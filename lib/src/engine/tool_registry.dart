@@ -1844,14 +1844,28 @@ Option 3: Tap a TextField first, then enter_text(text: "value") without key/ref 
       },
       {
         "name": "drag",
-        "description": "Drag from one element to another",
+        "description": "Drag from one element (from_key/to_key) or between "
+            "logical coordinates (start_x/start_y -> end_x/end_y). Set "
+            "hold_ms (e.g. 400) for LongPressDraggable / long-press-to-select "
+            "lists so the drag is recognised before the pointer moves.",
         "inputSchema": {
           "type": "object",
           "properties": {
             "from_key": {"type": "string", "description": "Source element key"},
-            "to_key": {"type": "string", "description": "Target element key"}
-          },
-          "required": ["from_key", "to_key"]
+            "to_key": {"type": "string", "description": "Target element key"},
+            "start_x": {"type": "number", "description": "Start X (logical)"},
+            "start_y": {"type": "number", "description": "Start Y (logical)"},
+            "end_x": {"type": "number", "description": "End X (logical)"},
+            "end_y": {"type": "number", "description": "End Y (logical)"},
+            "hold_ms": {
+              "type": "integer",
+              "description": "Press-and-hold before moving, in ms (default 0)"
+            },
+            "duration_ms": {
+              "type": "integer",
+              "description": "Travel time in ms (default 400)"
+            }
+          }
         }
       },
 

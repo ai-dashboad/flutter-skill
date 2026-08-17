@@ -1,6 +1,26 @@
 part of '../server.dart';
 
 extension _BfScreenshot on FlutterMcpServer {
+  /// Image vs logical geometry so an agent can convert pixels it sees in the
+  /// PNG back to the logical coordinates that tap_at/swipe/drag expect.
+  Map<String, dynamic> _screenshotGeometry(Map<String, dynamic> info) {
+    final imageWidth = info['imageWidth'] as num?;
+    final logicalWidth = info['logicalWidth'] as num?;
+    if (imageWidth == null || logicalWidth == null || logicalWidth == 0) {
+      return const {};
+    }
+    final scale = imageWidth / logicalWidth;
+    return {
+      "image_size": {"width": imageWidth, "height": info['imageHeight']},
+      "logical_size": {"width": logicalWidth, "height": info['logicalHeight']},
+      "device_pixel_ratio": info['devicePixelRatio'],
+      "scale": scale,
+      "coordinates_hint": "Tools take LOGICAL coordinates. To tap what you "
+          "see at image pixel (px, py): x = px / scale, y = py / scale "
+          "(scale = ${scale.toStringAsFixed(3)}). Prefer inspect() centers.",
+    };
+  }
+
   Future<dynamic> _handleScreenshotTool(
       String name, Map<String, dynamic> args, AppDriver? client) async {
     switch (name) {
@@ -11,8 +31,17 @@ extension _BfScreenshot on FlutterMcpServer {
         final saveToFile = args['save_to_file'] ??
             true; // Save to file by default to avoid token overflow
 
-        var imageBase64 =
-            await client!.takeScreenshot(quality: quality, maxWidth: maxWidth);
+        Map<String, dynamic> geometry = const {};
+        String? imageBase64;
+        if (client is FlutterSkillClient) {
+          final info = await client.takeScreenshotWithInfo(
+              quality: quality, maxWidth: maxWidth);
+          imageBase64 = info['image'] as String?;
+          geometry = _screenshotGeometry(info);
+        } else {
+          imageBase64 = await client!
+              .takeScreenshot(quality: quality, maxWidth: maxWidth);
+        }
 
         // Fallback to native screenshot if bridge returns null
         // (e.g. React Native returns _needs_native flag)
@@ -56,6 +85,7 @@ extension _BfScreenshot on FlutterMcpServer {
             "quality": quality,
             "max_width": maxWidth,
             "format": "png",
+            ...geometry,
             "message": "Screenshot saved to ${file.path}"
           };
         } else {
@@ -64,6 +94,7 @@ extension _BfScreenshot on FlutterMcpServer {
             "image": imageBase64,
             "quality": quality,
             "max_width": maxWidth,
+            ...geometry,
             "warning":
                 "Returning base64 data. Consider using save_to_file=true for large images."
           };

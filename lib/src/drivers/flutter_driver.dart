@@ -287,20 +287,36 @@ Auto-setup: run  diagnose_project()  to fix automatically.
 
   Future<bool> swipe(
       {required String direction, double distance = 300, String? key}) async {
-    final result = await _call('ext.flutter.flutter_skill.swipe', {
+    final result = await swipeWithDetails(
+        direction: direction, distance: distance, key: key);
+    return result['success'] == true;
+  }
+
+  /// Swipe; the map carries `success` and, when frames stalled, `warning`.
+  Future<Map<String, dynamic>> swipeWithDetails(
+      {required String direction, double distance = 300, String? key}) async {
+    return await _call('ext.flutter.flutter_skill.swipe', {
       'direction': direction,
       'distance': distance.toString(),
       if (key != null) 'key': key,
     });
+  }
+
+  Future<bool> drag(
+      {required String fromKey, required String toKey, int holdMs = 0}) async {
+    final result =
+        await dragWithDetails(fromKey: fromKey, toKey: toKey, holdMs: holdMs);
     return result['success'] == true;
   }
 
-  Future<bool> drag({required String fromKey, required String toKey}) async {
-    final result = await _call('ext.flutter.flutter_skill.drag', {
+  /// Drag; the map carries `success` and, when frames stalled, `warning`.
+  Future<Map<String, dynamic>> dragWithDetails(
+      {required String fromKey, required String toKey, int holdMs = 0}) async {
+    return await _call('ext.flutter.flutter_skill.drag', {
       'fromKey': fromKey,
       'toKey': toKey,
+      'hold': holdMs.toString(),
     });
-    return result['success'] == true;
   }
 
   Future<bool> doubleTap({String? key, String? text}) async {
@@ -369,11 +385,18 @@ Auto-setup: run  diagnose_project()  to fix automatically.
   // ==================== SCREENSHOT ====================
 
   Future<String?> takeScreenshot({double quality = 1.0, int? maxWidth}) async {
-    final result = await _call('ext.flutter.flutter_skill.screenshot', {
+    return (await takeScreenshotWithInfo(
+        quality: quality, maxWidth: maxWidth))['image'] as String?;
+  }
+
+  /// Screenshot plus its geometry: `image` (base64 PNG), `imageWidth`,
+  /// `imageHeight`, `logicalWidth`, `logicalHeight`, `devicePixelRatio`.
+  Future<Map<String, dynamic>> takeScreenshotWithInfo(
+      {double quality = 1.0, int? maxWidth}) async {
+    return await _call('ext.flutter.flutter_skill.screenshot', {
       'quality': quality.toString(),
       if (maxWidth != null) 'maxWidth': maxWidth.toString(),
     });
-    return result['image'];
   }
 
   Future<String?> takeRegionScreenshot(
@@ -455,6 +478,7 @@ Auto-setup: run  diagnose_project()  to fix automatically.
     double endX,
     double endY, {
     int duration = 300,
+    int holdMs = 0,
   }) async {
     return await _call('ext.flutter.flutter_skill.swipeCoordinates', {
       'startX': startX.toString(),
@@ -462,6 +486,7 @@ Auto-setup: run  diagnose_project()  to fix automatically.
       'endX': endX.toString(),
       'endY': endY.toString(),
       'duration': duration.toString(),
+      'hold': holdMs.toString(),
     });
   }
 
