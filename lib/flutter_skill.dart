@@ -5,6 +5,7 @@ import 'dart:math';
 import 'dart:ui' as ui;
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/gestures.dart' show PointerAddedEvent;
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/scheduler.dart';
@@ -626,7 +627,7 @@ class FlutterSkillBinding {
       try {
         final route = _getCurrentRoute();
         return developer.ServiceExtensionResponse.result(
-            jsonEncode({'route': route}));
+            jsonEncode({'route': route, 'routes': _routeEntries()}));
       } catch (e, stack) {
         return _errorResponse(e, stack);
       }
@@ -726,6 +727,144 @@ class FlutterSkillBinding {
       }
     });
 
+    // ==================== FOCUS / TYPING / TOGGLES / HOVER ====================
+
+    // type_text: insert into the focused field the way an IME commits text
+    // (replaces the current selection), so onChanged fires as for a user.
+    developer.registerExtension('ext.flutter.flutter_skill.typeText',
+        (method, parameters) async {
+      try {
+        final text = parameters['text'] ?? '';
+        final field = _findFocusedTextField();
+        if (field == null) {
+          return developer.ServiceExtensionResponse.result(jsonEncode({
+            'success': false,
+            'error': 'No focused text field. Use focus(key) or tap it first.',
+          }));
+        }
+        final value = field.textEditingValue;
+        final sel = value.selection.isValid
+            ? value.selection
+            : TextSelection.collapsed(offset: value.text.length);
+        final newText = value.text.replaceRange(sel.start, sel.end, text);
+        field.updateEditingValue(TextEditingValue(
+          text: newText,
+          selection: TextSelection.collapsed(offset: sel.start + text.length),
+        ));
+        await _settle();
+        return developer.ServiceExtensionResponse.result(jsonEncode(
+            {'success': true, 'message': 'Typed "$text"', 'value': newText}));
+      } catch (e, stack) {
+        return _errorResponse(e, stack);
+      }
+    });
+
+    // focus / blur: drive the field's own FocusNode.
+    developer.registerExtension('ext.flutter.flutter_skill.focus',
+        (method, parameters) async {
+      try {
+        final key = parameters['key'];
+        final field = key == null ? null : _findEditableText(key);
+        if (field == null) {
+          return developer.ServiceExtensionResponse.result(jsonEncode({
+            'success': false,
+            'error': 'No text field with key "$key"',
+          }));
+        }
+        field.widget.focusNode.requestFocus();
+        await _settle();
+        return developer.ServiceExtensionResponse.result(
+            jsonEncode({'success': true, 'message': 'Focused "$key"'}));
+      } catch (e, stack) {
+        return _errorResponse(e, stack);
+      }
+    });
+    developer.registerExtension('ext.flutter.flutter_skill.blur',
+        (method, parameters) async {
+      try {
+        final key = parameters['key'];
+        final field =
+            key == null ? _findFocusedTextField() : _findEditableText(key);
+        if (field == null) {
+          return developer.ServiceExtensionResponse.result(jsonEncode({
+            'success': false,
+            'error': 'No focused text field to blur',
+          }));
+        }
+        field.widget.focusNode.unfocus();
+        await _settle();
+        return developer.ServiceExtensionResponse.result(
+            jsonEncode({'success': true, 'message': 'Blurred'}));
+      } catch (e, stack) {
+        return _errorResponse(e, stack);
+      }
+    });
+
+    // set_checkbox: tap the toggle until it shows the requested state.
+    developer.registerExtension('ext.flutter.flutter_skill.setCheckbox',
+        (method, parameters) async {
+      try {
+        final key = parameters['key'] ?? '';
+        final wanted = parameters['checked'] == 'true';
+        final current = _getCheckboxState(key);
+        if (current == null) {
+          return developer.ServiceExtensionResponse.result(jsonEncode({
+            'success': false,
+            'error': 'No Checkbox/Switch (or *ListTile) with key "$key"',
+          }));
+        }
+        if (current != wanted) {
+          await _performTapWithDetails(key: key);
+        }
+        return developer.ServiceExtensionResponse.result(jsonEncode({
+          'success': _getCheckboxState(key) == wanted,
+          'checked': _getCheckboxState(key),
+        }));
+      } catch (e, stack) {
+        return _errorResponse(e, stack);
+      }
+    });
+
+    // hover: move a mouse pointer over the element (tooltips, hover styles).
+    developer.registerExtension('ext.flutter.flutter_skill.hover',
+        (method, parameters) async {
+      try {
+        final element =
+            _findElement(key: parameters['key'], text: parameters['text']);
+        final box = element?.renderObject;
+        if (element == null || box is! RenderBox || !box.hasSize) {
+          return developer.ServiceExtensionResponse.result(jsonEncode({
+            'success': false,
+            'error': 'Element not found or not laid out',
+          }));
+        }
+        final position = box.localToGlobal(box.size.center(Offset.zero));
+        final binding = WidgetsBinding.instance;
+        // One synthetic mouse device, added once: MouseTracker asserts on a
+        // repeated PointerAddedEvent for a device that was never removed.
+        if (!_syntheticMouseAdded) {
+          binding.handlePointerEvent(PointerAddedEvent(
+              position: position,
+              kind: ui.PointerDeviceKind.mouse,
+              device: _syntheticMouseDevice,
+              timeStamp: _pointerClock.elapsed));
+          _syntheticMouseAdded = true;
+        }
+        binding.handlePointerEvent(PointerHoverEvent(
+            position: position,
+            kind: ui.PointerDeviceKind.mouse,
+            device: _syntheticMouseDevice,
+            timeStamp: _pointerClock.elapsed));
+        await _settle();
+        return developer.ServiceExtensionResponse.result(jsonEncode({
+          'success': true,
+          'position': {'x': position.dx.round(), 'y': position.dy.round()},
+        }));
+      } catch (e, stack) {
+        return _errorResponse(e, stack);
+      }
+    });
+
     // ==================== PRESS KEY ====================
 
     developer.registerExtension('ext.flutter.flutter_skill.pressKey',
@@ -778,55 +917,21 @@ class FlutterSkillBinding {
         // ignore: unused_local_variable
         final isMeta = modifiers.contains('meta');
 
-        // Simulate key press through the focus system
-        final focusNode = FocusManager.instance.primaryFocus;
-        if (focusNode != null) {
-          // Use HardwareKeyboard simulation
-          // ignore: unused_local_variable
-          final binding = WidgetsBinding.instance;
-          // ignore: unused_local_variable
-          final pointer = _pointerCounter++;
-
-          // Create a RawKeyDownEvent and dispatch through the focus system
-          // ignore: unused_local_variable
-          final keyDown = KeyDownEvent(
-            physicalKey: PhysicalKeyboardKey.findKeyByCode(logicalKey.keyId) ??
-                PhysicalKeyboardKey.enter,
-            logicalKey: logicalKey,
-            timeStamp:
-                Duration(milliseconds: DateTime.now().millisecondsSinceEpoch),
-          );
-
-          // Dispatch through ServicesBinding
-          await ServicesBinding.instance.keyEventManager
-              .handleKeyData(ui.KeyData(
-            type: ui.KeyEventType.down,
-            timeStamp:
-                Duration(milliseconds: DateTime.now().millisecondsSinceEpoch),
-            physical: (PhysicalKeyboardKey.findKeyByCode(logicalKey.keyId) ??
-                    PhysicalKeyboardKey.enter)
-                .usbHidUsage,
-            logical: logicalKey.keyId,
-            character: key.length == 1 ? key : null,
-            synthesized: false,
-          ));
-
-          await Future.delayed(const Duration(milliseconds: 50));
-
-          await ServicesBinding.instance.keyEventManager
-              .handleKeyData(ui.KeyData(
-            type: ui.KeyEventType.up,
-            timeStamp:
-                Duration(milliseconds: DateTime.now().millisecondsSinceEpoch),
-            physical: (PhysicalKeyboardKey.findKeyByCode(logicalKey.keyId) ??
-                    PhysicalKeyboardKey.enter)
-                .usbHidUsage,
-            logical: logicalKey.keyId,
-            character: null,
-            synthesized: false,
-          ));
+        // Dispatch as a real hardware key: down (with modifiers held), up.
+        // Enter on a focused text field also performs the platform's "done"
+        // action, which is what fires onSubmitted on desktop.
+        final handled = await _pressHardwareKey(logicalKey, modifiers,
+            character: key.length == 1 ? key : null);
+        if (logicalKey == LogicalKeyboardKey.enter) {
+          _findFocusedTextField()?.performAction(TextInputAction.done);
         }
-
+        await _settle();
+        return developer.ServiceExtensionResponse.result(jsonEncode({
+          'success': true,
+          'message': 'Key pressed: $key',
+          'handled': handled,
+        }));
+        // ignore: dead_code
         return developer.ServiceExtensionResponse.result(
           jsonEncode({'success': true, 'message': 'Key pressed: $key'}),
         );
@@ -1658,6 +1763,97 @@ class FlutterSkillBinding {
     return scored.map((e) => e.key).toList();
   }
 
+  // ==================== SYNTHETIC KEYBOARD ====================
+
+  /// USB HID usage codes for the physical keys we can synthesize; the
+  /// framework requires physical/logical pairs to be consistent.
+  static const Map<int, int> _physicalUsageByLogicalId = {
+    0x100000008: 0x0007002a, // backspace
+    0x100000009: 0x0007002b, // tab
+    0x10000000d: 0x00070028, // enter
+    0x10000001b: 0x00070029, // escape
+    0x10000007f: 0x0007004c, // delete
+    0x100000301: 0x00070051, // arrowDown
+    0x100000302: 0x00070050, // arrowLeft
+    0x100000303: 0x0007004f, // arrowRight
+    0x100000304: 0x00070052, // arrowUp
+    0x100000305: 0x0007004d, // end
+    0x100000306: 0x0007004a, // home
+    0x100000307: 0x0007004e, // pageDown
+    0x100000308: 0x0007004b, // pageUp
+    0x20: 0x0007002c, // space
+  };
+
+  /// Device id of the synthetic mouse used by `hover` (added on first use).
+  static const int _syntheticMouseDevice = 0x5ca1;
+  static bool _syntheticMouseAdded = false;
+
+  static PhysicalKeyboardKey _physicalFor(LogicalKeyboardKey logical) {
+    final id = logical.keyId;
+    final mapped = _physicalUsageByLogicalId[id];
+    if (mapped != null) return PhysicalKeyboardKey(mapped);
+    // Unicode letters/digits: keyA..keyZ = 0x70004.., digit1..9,0 = 0x7001e..
+    if (id >= 0x61 && id <= 0x7a)
+      return PhysicalKeyboardKey(0x00070004 + id - 0x61);
+    if (id >= 0x31 && id <= 0x39)
+      return PhysicalKeyboardKey(0x0007001e + id - 0x31);
+    if (id == 0x30) return const PhysicalKeyboardKey(0x00070027);
+    return PhysicalKeyboardKey.findKeyByCode(id) ?? PhysicalKeyboardKey.enter;
+  }
+
+  static const Map<String, (LogicalKeyboardKey, PhysicalKeyboardKey)>
+      _modifierKeys = {
+    'shift': (LogicalKeyboardKey.shiftLeft, PhysicalKeyboardKey.shiftLeft),
+    'ctrl': (LogicalKeyboardKey.controlLeft, PhysicalKeyboardKey.controlLeft),
+    'control': (
+      LogicalKeyboardKey.controlLeft,
+      PhysicalKeyboardKey.controlLeft
+    ),
+    'alt': (LogicalKeyboardKey.altLeft, PhysicalKeyboardKey.altLeft),
+    'meta': (LogicalKeyboardKey.metaLeft, PhysicalKeyboardKey.metaLeft),
+  };
+
+  /// Delivers one synthetic [KeyEvent] the way the engine's key path does
+  /// once a platform message is decoded: [HardwareKeyboard] records the
+  /// pressed state, then the [KeyMessage] goes to the global handler
+  /// (FocusManager → Shortcuts/Actions → text-editing shortcuts).
+  /// Returns whether a handler claimed it.
+  static bool _deliverKey(KeyEvent event) {
+    HardwareKeyboard.instance.handleKeyEvent(event);
+    final handler = ServicesBinding.instance.keyEventManager.keyMessageHandler;
+    return handler?.call(KeyMessage(<KeyEvent>[event], null)) ?? false;
+  }
+
+  /// Sends a physical key press (down, up) with [modifiers] held around it.
+  static Future<bool> _pressHardwareKey(
+      LogicalKeyboardKey logical, List<String> modifiers,
+      {String? character}) async {
+    Duration now() => _pointerClock.elapsed;
+    final held = <(LogicalKeyboardKey, PhysicalKeyboardKey)>[];
+    for (final m in modifiers) {
+      final pair = _modifierKeys[m.toLowerCase()];
+      if (pair == null) continue;
+      _deliverKey(KeyDownEvent(
+          physicalKey: pair.$2, logicalKey: pair.$1, timeStamp: now()));
+      held.add(pair);
+    }
+    final physical = _physicalFor(logical);
+    final handled = _deliverKey(KeyDownEvent(
+      physicalKey: physical,
+      logicalKey: logical,
+      character: character,
+      timeStamp: now(),
+    ));
+    await Future<void>.delayed(const Duration(milliseconds: 40));
+    _deliverKey(KeyUpEvent(
+        physicalKey: physical, logicalKey: logical, timeStamp: now()));
+    for (final pair in held.reversed) {
+      _deliverKey(KeyUpEvent(
+          physicalKey: pair.$2, logicalKey: pair.$1, timeStamp: now()));
+    }
+    return handled;
+  }
+
   // ==================== SYNTHETIC POINTER ENGINE ====================
   //
   // Every emulated input goes through [_emitGesture]. Flutter's gesture
@@ -1969,11 +2165,16 @@ class FlutterSkillBinding {
 
   static Future<Map<String, dynamic>> _performScroll(
       {String? key, String? text}) async {
-    final element = _findElement(key: key, text: text);
+    var element = _findElement(key: key, text: text);
+    // Lazily built lists (ListView.builder, slivers) only mount the rows in
+    // view, so an off-screen target has no element yet. Page through every
+    // scrollable until it appears, then let ensureVisible do the fine work.
+    element ??= await _revealByPaging(() => _findElement(key: key, text: text));
     if (element == null) {
       return {
         'success': false,
-        'error': 'Element not found (key: $key, text: $text)'
+        'error': 'Element not found (key: $key, text: $text), '
+            'also after paging through all scrollables',
       };
     }
 
@@ -2933,13 +3134,30 @@ class FlutterSkillBinding {
     if (element == null) return null;
 
     final widget = element.widget;
-    if (widget is Checkbox) {
-      return widget.value;
-    }
-    if (widget is Switch) {
-      return widget.value;
-    }
+    if (widget is Checkbox) return widget.value;
+    if (widget is Switch) return widget.value;
+    if (widget is CheckboxListTile) return widget.value;
+    if (widget is SwitchListTile) return widget.value;
     return null;
+  }
+
+  /// The EditableText inside the widget with [key] (TextField, TextFormField
+  /// or a wrapper), or null.
+  static EditableTextState? _findEditableText(String key) {
+    final element = _findElementByKey(key);
+    if (element == null) return null;
+    EditableTextState? found;
+    void visit(Element e) {
+      if (found != null) return;
+      if (e is StatefulElement && e.state is EditableTextState) {
+        found = e.state as EditableTextState;
+        return;
+      }
+      e.visitChildren(visit);
+    }
+
+    visit(element);
+    return found;
   }
 
   static double? _getSliderValue(String key) {
@@ -3183,26 +3401,56 @@ class FlutterSkillBinding {
 
   // ==================== NAVIGATION ====================
 
-  static String? _getCurrentRoute() {
-    String? currentRoute;
-    final binding = WidgetsBinding.instance;
-
-    void visit(Element element) {
-      if (element.widget is ModalRoute) {
-        final route = ModalRoute.of(element);
-        if (route != null) {
-          currentRoute = route.settings.name;
+  /// Every route currently mounted, in stack order (outer navigator first,
+  /// each navigator bottom → top, nested navigators after the route that
+  /// hosts them). Each entry: `name` (RouteSettings.name — go_router sets
+  /// the route name or path), `key` (Page key), `isCurrent`, `depth`
+  /// (navigator nesting), `type`.
+  ///
+  /// Routes are found through the `_ModalScopeStatus` inherited widget that
+  /// every ModalRoute installs above its content: walking the element tree
+  /// meets each route exactly once and does not register dependencies (as
+  /// `ModalRoute.of` would). Field access is dynamic because the class is
+  /// private to the framework; its members are public and stable.
+  static List<Map<String, dynamic>> _routeEntries() {
+    final entries = <Map<String, dynamic>>[];
+    void visit(Element element, int depth) {
+      var next = depth;
+      final widget = element.widget;
+      if (widget.runtimeType.toString() == '_ModalScopeStatus') {
+        try {
+          final route = (widget as dynamic).route as Route<dynamic>;
+          final settings = route.settings;
+          entries.add({
+            'name': settings.name,
+            'key': settings is Page ? settings.key?.toString() : null,
+            'isCurrent': route.isCurrent,
+            'depth': depth,
+            'type': route.runtimeType.toString(),
+          });
+          next = depth + 1;
+        } catch (_) {
+          // framework internals changed shape; skip silently
         }
       }
-      element.visitChildren(visit);
+      element.visitChildren((child) => visit(child, next));
     }
 
     // ignore: invalid_use_of_protected_member
-    if (binding.rootElement != null) {
-      visit(binding.rootElement!);
-    }
+    final rootElement = WidgetsBinding.instance.rootElement;
+    if (rootElement != null) visit(rootElement, 0);
+    return entries;
+  }
 
-    return currentRoute;
+  /// Name of the topmost current route (innermost navigator wins). Falls
+  /// back to the page key when the route has no name.
+  static String? _getCurrentRoute() {
+    Map<String, dynamic>? current;
+    for (final entry in _routeEntries()) {
+      if (entry['isCurrent'] == true) current = entry;
+    }
+    if (current == null) return null;
+    return (current['name'] ?? current['key']) as String?;
   }
 
   static bool _goBack() {
@@ -3219,16 +3467,50 @@ class FlutterSkillBinding {
 
   static List<String> _getNavigationStack() {
     final routes = <String>[];
-    final context = _findNavigatorContext();
-    if (context == null) return routes;
+    for (final entry in _routeEntries()) {
+      final label = (entry['name'] ?? entry['key'] ?? entry['type']) as String;
+      routes.add(label);
+    }
+    return routes;
+  }
 
-    // This is a simplified version - full implementation would need NavigatorState access
-    final currentRoute = _getCurrentRoute();
-    if (currentRoute != null) {
-      routes.add(currentRoute);
+  /// Pages every mounted vertical/horizontal scrollable from its start to
+  /// its end (viewport-sized jumps, one frame each) until [find] returns an
+  /// element. Returns it, or null when nothing appeared anywhere.
+  static Future<Element?> _revealByPaging(Element? Function() find) async {
+    final positions = <ScrollPosition>[];
+    void visit(Element e) {
+      if (e is StatefulElement && e.state is ScrollableState) {
+        final position = (e.state as ScrollableState).position;
+        if (position.hasContentDimensions &&
+            position.maxScrollExtent > position.minScrollExtent) {
+          positions.add(position);
+        }
+      }
+      e.visitChildren(visit);
     }
 
-    return routes;
+    // ignore: invalid_use_of_protected_member
+    final rootElement = WidgetsBinding.instance.rootElement;
+    if (rootElement != null) visit(rootElement);
+
+    for (final position in positions) {
+      final origin = position.pixels;
+      final step = position.viewportDimension * 0.8;
+      var offset = position.minScrollExtent;
+      while (true) {
+        position.jumpTo(offset);
+        await _settle();
+        final found = find();
+        if (found != null) return found;
+        if (offset >= position.maxScrollExtent) break;
+        offset = (offset + step)
+            .clamp(position.minScrollExtent, position.maxScrollExtent);
+      }
+      position.jumpTo(origin);
+      await _settle();
+    }
+    return null;
   }
 
   static BuildContext? _findNavigatorContext() {

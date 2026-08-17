@@ -420,9 +420,30 @@ Auto-setup: run  diagnose_project()  to fix automatically.
   // ==================== NAVIGATION ====================
 
   Future<String?> getCurrentRoute() async {
-    final result = await _call('ext.flutter.flutter_skill.getCurrentRoute');
-    return result['route'];
+    return (await getCurrentRouteInfo())['route'] as String?;
   }
+
+  /// `route` (name of the topmost current route) and `routes` (full stack).
+  Future<Map<String, dynamic>> getCurrentRouteInfo() async {
+    return await _call('ext.flutter.flutter_skill.getCurrentRoute');
+  }
+
+  Future<Map<String, dynamic>> typeText(String text) async =>
+      await _call('ext.flutter.flutter_skill.typeText', {'text': text});
+
+  Future<Map<String, dynamic>> focus(String key) async =>
+      await _call('ext.flutter.flutter_skill.focus', {'key': key});
+
+  Future<Map<String, dynamic>> blur({String? key}) async => await _call(
+      'ext.flutter.flutter_skill.blur', {if (key != null) 'key': key});
+
+  Future<Map<String, dynamic>> setCheckbox(String key, bool checked) async =>
+      await _call('ext.flutter.flutter_skill.setCheckbox',
+          {'key': key, 'checked': checked.toString()});
+
+  Future<Map<String, dynamic>> hover({String? key, String? text}) async =>
+      await _call('ext.flutter.flutter_skill.hover',
+          {if (key != null) 'key': key, if (text != null) 'text': text});
 
   Future<bool> goBack() async {
     final result = await _call('ext.flutter.flutter_skill.goBack');

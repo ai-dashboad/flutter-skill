@@ -250,6 +250,9 @@ extension _FlutterHelpers on FlutterMcpServer {
       );
 
       if (found) {
+        // Being built (cache extent) is not being visible: bring it into
+        // the viewport before reporting success.
+        await client.scrollTo(key: key, text: text);
         return {
           "success": true,
           "found": true,
@@ -257,14 +260,21 @@ extension _FlutterHelpers on FlutterMcpServer {
         };
       }
 
-      // Scroll
+      // `direction` is the scroll direction ("down" reveals content further
+      // down); a swipe is the finger's motion, which is the opposite way.
+      const fingerFor = {
+        'down': 'up',
+        'up': 'down',
+        'right': 'left',
+        'left': 'right',
+      };
       await client.swipe(
-        direction: direction,
+        direction: fingerFor[direction] ?? direction,
         distance: 300,
         key: scrollableKey,
       );
 
-      // Wait for scroll animation
+      // Let the fling settle before looking again
       await Future.delayed(const Duration(milliseconds: 300));
     }
 

@@ -10,7 +10,8 @@ extension _BfNavigation on FlutterMcpServer {
           return {"route": route};
         }
         final fc = _asFlutterClient(client!, 'get_current_route');
-        return await fc.getCurrentRoute();
+        // Always a map: a bare null would read as "tool not handled".
+        return await fc.getCurrentRouteInfo();
       case 'go_back':
         final count = (args['count'] as num?)?.toInt() ?? 1;
         var steps = 0;

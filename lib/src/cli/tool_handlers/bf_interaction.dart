@@ -211,7 +211,42 @@ extension _BfInteraction on FlutterMcpServer {
               .callMethod('get_checkbox_state', {'key': args['key']});
         }
         final fc = _asFlutterClient(client!, 'get_checkbox_state');
-        return await fc.getCheckboxState(args['key']);
+        final checked = await fc.getCheckboxState(args['key']);
+        return checked == null
+            ? {"success": false, "error": "No Checkbox/Switch with that key"}
+            : {"success": true, "checked": checked};
+      case 'set_checkbox':
+        if (client is BridgeDriver) {
+          return await client.callMethod(
+              'set_checkbox', {'key': args['key'], 'checked': args['checked']});
+        }
+        return await _asFlutterClient(client!, 'set_checkbox')
+            .setCheckbox(args['key'] as String, args['checked'] == true);
+      case 'type_text':
+        if (client is BridgeDriver) {
+          return await client.callMethod('type_text', {'text': args['text']});
+        }
+        return await _asFlutterClient(client!, 'type_text')
+            .typeText(args['text'] as String? ?? '');
+      case 'focus':
+        if (client is BridgeDriver) {
+          return await client.callMethod('focus', {'key': args['key']});
+        }
+        return await _asFlutterClient(client!, 'focus')
+            .focus(args['key'] as String? ?? '');
+      case 'blur':
+        if (client is BridgeDriver) {
+          return await client.callMethod('blur', {'key': args['key']});
+        }
+        return await _asFlutterClient(client!, 'blur')
+            .blur(key: args['key'] as String?);
+      case 'hover':
+        if (client is BridgeDriver) {
+          return await client.callMethod('hover',
+              {'key': args['key'], 'text': args['text'], 'ref': args['ref']});
+        }
+        return await _asFlutterClient(client!, 'hover')
+            .hover(key: args['key'] as String?, text: args['text'] as String?);
       case 'get_slider_value':
         if (client is BridgeDriver) {
           return await client
