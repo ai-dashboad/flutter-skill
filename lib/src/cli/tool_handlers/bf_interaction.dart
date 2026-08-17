@@ -292,7 +292,9 @@ extension _BfInteraction on FlutterMcpServer {
         }
         // Flutter VM Service — use the registered pressKey extension
         if (client is FlutterSkillClient) {
-          final result = await client.pressKey(key);
+          final modifiers =
+              (args['modifiers'] as List?)?.map((m) => m.toString()).toList();
+          final result = await client.pressKey(key, modifiers: modifiers);
           if (result['success'] == true) {
             return {"success": true, "message": "Key pressed: $key"};
           }

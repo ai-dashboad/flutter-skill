@@ -1838,10 +1838,12 @@ class FlutterSkillBinding {
       held.add(pair);
     }
     final physical = _physicalFor(logical);
+    // Platforms report no character while a modifier is held (Ctrl+A is a
+    // shortcut, not text input).
     final handled = _deliverKey(KeyDownEvent(
       physicalKey: physical,
       logicalKey: logical,
-      character: character,
+      character: held.isEmpty ? character : null,
       timeStamp: now(),
     ));
     await Future<void>.delayed(const Duration(milliseconds: 40));
