@@ -17,6 +17,7 @@ extension _DevToolHandlers on FlutterMcpServer {
     if (name == 'hot_reload') {
       final client = _getClient(args);
       _requireConnection(client);
+      if (client is FlutterSkillClient) return await client.hotReload();
       await client!.hotReload();
       return "Hot reload triggered";
     }
@@ -25,8 +26,7 @@ extension _DevToolHandlers on FlutterMcpServer {
       final client = _getClient(args);
       _requireConnection(client);
       final fc = _asFlutterClient(client!, 'hot_restart');
-      await fc.hotRestart();
-      return "Hot restart triggered";
+      return await fc.hotRestart();
     }
 
     if (name == 'enable_test_indicators') {

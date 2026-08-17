@@ -1,3 +1,5 @@
+import 'dart:async';
+import 'dart:io';
 import 'package:vm_service/vm_service.dart';
 import 'package:vm_service/vm_service_io.dart';
 import '../discovery/unified_discovery.dart';
@@ -8,6 +10,14 @@ class FlutterSkillClient implements AppDriver {
   VmService? _service;
   String? _isolateId;
   bool _reconnecting = false;
+
+  /// Services registered on the VM by external clients (notably the Flutter
+  /// tool, alias "Flutter Tools"), keyed by service name -> callable method
+  /// (e.g. `reloadSources` -> `s1.reloadSources`). Populated from the
+  /// `Service` stream, which replays existing registrations on subscribe.
+  final Map<String, String> _registeredServices = {};
+  final Map<String, Completer<String?>> _serviceWaiters = {};
+  StreamSubscription<Event>? _serviceEvents;
 
   FlutterSkillClient(this.wsUri);
 
@@ -38,7 +48,8 @@ Solution:
 
 URI: $wsUri''');
       }
-      _isolateId = isolates.first.id!;
+      _isolateId = _pickMainIsolate(isolates);
+      await _watchRegisteredServices();
     } catch (e) {
       // Clean up partially initialized service
       try {
@@ -66,6 +77,10 @@ Error details: $e''');
   }
 
   Future<void> disconnect() async {
+    await _serviceEvents?.cancel();
+    _serviceEvents = null;
+    _registeredServices.clear();
+    _serviceWaiters.clear();
     try {
       await _service?.dispose();
     } catch (_) {
@@ -103,7 +118,8 @@ Error details: $e''');
       final vm = await _service!.getVM();
       final isolates = vm.isolates;
       if (isolates != null && isolates.isNotEmpty) {
-        _isolateId = isolates.first.id!;
+        _isolateId = _pickMainIsolate(isolates);
+        await _watchRegisteredServices();
         print('DEBUG: Reconnected to VM Service successfully');
         return true;
       }
@@ -136,8 +152,18 @@ URI: $wsUri''');
       );
       return response.json ?? {};
     } catch (e) {
-      // Detect SDK-not-integrated errors and surface a clear setup message.
       final msg = e.toString();
+      // The cached isolate no longer exists (e.g. after a hot restart):
+      // re-resolve the main isolate once and retry.
+      if (_isStaleIsolateError(e) && await _refreshIsolate()) {
+        final response = await _service!.callServiceExtension(
+          method,
+          isolateId: _isolateId!,
+          args: args,
+        );
+        return response.json ?? {};
+      }
+      // Detect SDK-not-integrated errors and surface a clear setup message.
       if (msg.contains('Method not found') ||
           msg.contains('Service extension not found') ||
           msg.contains('ext.flutter.flutter_skill') && msg.contains('-32601')) {
@@ -540,33 +566,220 @@ Auto-setup: run  diagnose_project()  to fix automatically.
 
   // ==================== EXISTING HELPERS ====================
 
-  Future<void> hotReload() async {
+  // ==================== HOT RELOAD / RESTART ====================
+  //
+  // A Flutter app cannot recompile Dart source on its own: the engine ships
+  // no kernel compiler, so the VM's built-in `reloadSources` RPC fails with
+  // "Error while starting Kernel isolate task" (and hot restart has no VM
+  // RPC at all). The `flutter run` tool that launched the app owns the
+  // incremental compiler and registers `reloadSources` and `hotRestart` as
+  // VM *services* (alias "Flutter Tools"); invoking those — exactly what
+  // DevTools and the IDEs do — recompiles, reloads and reassembles.
+
+  static const _reloadService = 'reloadSources';
+  static const _restartService = 'hotRestart';
+
+  /// Hot reload through the Flutter tool. Returns a short human report.
+  Future<String> hotReload() async {
+    _requireService();
+    final elapsed = await _invokeFlutterTools(_reloadService);
+    if (elapsed != null) {
+      await _settleCompileClock();
+      return 'Hot reload performed by Flutter Tools (${elapsed}ms)';
+    }
+    // No Flutter tool attached: the raw VM RPC is the only option. It only
+    // succeeds when the VM can compile Dart itself (plain `dart run`), so
+    // check the report instead of silently claiming success.
+    final report =
+        await _callWithReconnect(() => _service!.reloadSources(_isolateId!));
+    if (report.success == true) return 'Hot reload performed by the VM';
+    // `notices` is not modelled by package:vm_service; read the raw JSON.
+    final notices = report.json?['notices'] as List<dynamic>? ?? const [];
+    final reasons = notices
+        .map((n) => (n as Map<String, dynamic>?)?['message'])
+        .whereType<String>()
+        .join('; ');
+    throw Exception('''❌ Hot reload is not possible on this VM Service.
+
+The VM cannot recompile Dart sources ($reasons) and no `flutter run` tool
+is attached to do it (no `reloadSources` service registered).
+
+Fix: launch the app with `flutter run` (debug mode) and connect to the VM
+Service URI it prints — the tool then registers the reload service that
+this command drives.''');
+  }
+
+  /// Hot restart through the Flutter tool, then re-bind to the new isolate.
+  Future<String> hotRestart() async {
+    _requireService();
+    final elapsed = await _invokeFlutterTools(_restartService);
+    if (elapsed == null) {
+      throw UnsupportedError(
+          '''❌ Hot restart is not possible on this VM Service.
+
+Hot restart is performed by the `flutter run` tool, which registers a
+`hotRestart` service on the VM. None is registered here — the app was not
+launched by `flutter run` in debug mode (or the tool has exited).
+
+Fix: launch the app with `flutter run` and connect to the printed URI.''');
+    }
+    // The main isolate is recreated by the restart; rebind before returning
+    // so the next call does not hit a collected isolate.
+    if (!await _refreshIsolate()) {
+      throw Exception('Hot restart completed but the new main isolate did '
+          'not appear; reconnect with connect_app().');
+    }
+    final ready = await _awaitFirstFrame();
+    await _settleCompileClock();
+    return 'Hot restart performed by Flutter Tools (${elapsed}ms'
+        '${ready ? '' : ', first frame not yet sent'})';
+  }
+
+  /// Invokes a service registered by the Flutter tool on the main isolate.
+  /// Returns the elapsed milliseconds, or null when the tool has not
+  /// registered [service] (no `flutter run` attached to this VM).
+  Future<int?> _invokeFlutterTools(String service) async {
+    final method = await _flutterToolsMethod(service);
+    if (method == null) return null;
+    final sw = Stopwatch()..start();
+    await _callWithReconnect(
+        () => _service!.callMethod(method, isolateId: _isolateId));
+    return sw.elapsedMilliseconds;
+  }
+
+  /// Waits until the restarted app has built and sent its first frame, so
+  /// the widget tree is populated for the caller's next inspection.
+  /// (`didSendFirstFrameEvent` rather than the *Rasterized* variant: the
+  /// latter never flips on some desktop embedders, e.g. Windows.)
+  Future<bool> _awaitFirstFrame() async {
+    const ext = 'ext.flutter.didSendFirstFrameEvent';
+    final deadline = DateTime.now().add(const Duration(seconds: 10));
+    while (DateTime.now().isBefore(deadline)) {
+      try {
+        final response =
+            await _service!.callServiceExtension(ext, isolateId: _isolateId);
+        final enabled = response.json?['enabled'];
+        if (enabled == true || enabled == 'true') return true;
+      } catch (_) {
+        // extension not registered yet — the isolate is still booting
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+    }
+    return false;
+  }
+
+  /// The Flutter tool detects edited files by comparing their mtime with the
+  /// wall-clock time of its last compile. On Windows, Dart reports mtimes
+  /// truncated to whole seconds, so a file saved within the same second as
+  /// that compile is silently treated as unchanged by the next reload or
+  /// restart ("0 updated files"). Agents edit and reload back-to-back, so
+  /// return only once the clock has rolled past the second in which the
+  /// compile happened; every later edit is then guaranteed to be picked up.
+  Future<void> _settleCompileClock() async {
+    if (!Platform.isWindows) return;
+    final now = DateTime.now();
+    final nextSecond = DateTime(
+        now.year, now.month, now.day, now.hour, now.minute, now.second + 1);
+    await Future<void>.delayed(nextSecond.difference(now));
+  }
+
+  void _requireService() {
     if (_service == null || _isolateId == null) {
       throw Exception('Not connected');
     }
+  }
+
+  Future<T> _callWithReconnect<T>(Future<T> Function() call) async {
     try {
-      await _service!.reloadSources(_isolateId!);
+      return await call();
     } catch (e) {
       if (!_isConnectionError(e)) rethrow;
-      if (await _reconnect()) {
-        await _service!.reloadSources(_isolateId!);
-        return;
-      }
+      if (await _reconnect()) return await call();
       throw Exception('❌ VM Service connection lost and reconnection failed.\n'
           'URI: $wsUri\n'
           'Original error: $e');
     }
   }
 
-  Future<void> hotRestart() async {
-    // The VM Service protocol does not expose a hot-restart RPC that can be
-    // called externally. A real hot restart requires re-running the Dart
-    // program from scratch, which is only possible by invoking `flutter run`
-    // again or using the Flutter tool's stdin protocol.
-    // Throw UnsupportedError so callers can detect this and fall back to
-    // hotReload or surface a warning to the user.
-    throw UnsupportedError('hotRestart is not supported via the VM Service. '
-        'Use hotReload for source updates, or restart the app via flutter run.');
+  /// Subscribes to the `Service` stream so registered services (and their
+  /// callable method names) are tracked live. The VM replays existing
+  /// registrations right after `streamListen`.
+  Future<void> _watchRegisteredServices() async {
+    await _serviceEvents?.cancel();
+    _registeredServices.clear();
+    final service = _service;
+    if (service == null) return;
+    _serviceEvents = service.onServiceEvent.listen((event) {
+      final name = event.service;
+      if (name == null) return;
+      if (event.kind == EventKind.kServiceRegistered && event.method != null) {
+        _registeredServices[name] = event.method!;
+        _serviceWaiters.remove(name)?.complete(event.method);
+      } else if (event.kind == EventKind.kServiceUnregistered) {
+        _registeredServices.remove(name);
+      }
+    });
+    try {
+      await service.streamListen(EventStreams.kService);
+    } on RPCError catch (e) {
+      // 103 = stream already subscribed; anything else is non-fatal here.
+      if (e.code != 103) print('DEBUG: Service stream unavailable: $e');
+    }
+  }
+
+  /// Method name (`sN.<service>`) for a service registered by the Flutter
+  /// tool. Registrations replayed by the VM arrive asynchronously right after
+  /// subscribing, so wait for the event (bounded) rather than polling.
+  Future<String?> _flutterToolsMethod(String service) async {
+    if (_serviceEvents == null) await _watchRegisteredServices();
+    final known = _registeredServices[service];
+    if (known != null) return known;
+    final waiter =
+        _serviceWaiters.putIfAbsent(service, () => Completer<String?>());
+    return waiter.future.timeout(const Duration(seconds: 2), onTimeout: () {
+      _serviceWaiters.remove(service);
+      return null;
+    });
+  }
+
+  static String _pickMainIsolate(List<IsolateRef> isolates) => isolates
+      .firstWhere((i) => i.name == 'main', orElse: () => isolates.first)
+      .id!;
+
+  /// True when a call failed because the target isolate no longer exists
+  /// (the VM answers with a `Collected`/`Expired` sentinel).
+  bool _isStaleIsolateError(Object e) =>
+      e is SentinelException ||
+      // Some transports surface the sentinel only as a message.
+      e.toString().contains('Sentinel kind: Collected');
+
+  /// Re-binds to the recreated main isolate (hot restart, or a Sentinel from
+  /// a call). The previous isolate may still be listed while it tears down,
+  /// so only an isolate with a *different* id that is already runnable is
+  /// accepted; polls briefly because the new one may not be up yet.
+  Future<bool> _refreshIsolate() async {
+    final service = _service;
+    if (service == null) return false;
+    final previous = _isolateId;
+    final deadline = DateTime.now().add(const Duration(seconds: 5));
+    while (DateTime.now().isBefore(deadline)) {
+      try {
+        final candidates = ((await service.getVM()).isolates ?? const [])
+            .where((i) => i.id != previous)
+            .toList();
+        if (candidates.isNotEmpty) {
+          final id = _pickMainIsolate(candidates);
+          if ((await service.getIsolate(id)).runnable == true) {
+            _isolateId = id;
+            return true;
+          }
+        }
+      } catch (_) {
+        // transient during restart
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+    }
+    return false;
   }
 
   Future<Map<String, dynamic>> getLayoutTree() async {
