@@ -5,14 +5,14 @@ class FlutterSkill < Formula
   license "MIT"
 
   # Platform-specific native binaries
+  # Intel macOS (x64) has no native binary: GitHub retired the macos-13 hosted
+  # runner used to build it, and current x64 runner images require a paid
+  # large-runner tier. Intel Mac users should install via npm/pub.dev instead,
+  # which fall back to the Dart runtime automatically.
   on_macos do
     on_arm do
       url "https://github.com/ai-dashboad/flutter-skill/releases/download/v0.9.36/flutter-skill-macos-arm64"
       sha256 "PLACEHOLDER_ARM64_SHA256"
-    end
-    on_intel do
-      url "https://github.com/ai-dashboad/flutter-skill/releases/download/v0.9.36/flutter-skill-macos-x64"
-      sha256 "PLACEHOLDER_X64_SHA256"
     end
   end
 
