@@ -5,8 +5,10 @@ import 'dart:math';
 import 'dart:ui' as ui;
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/gestures.dart' show PointerAddedEvent;
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
+import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
 import 'flutter_skill_semantic_refs.dart';
 
@@ -409,10 +411,10 @@ class FlutterSkillBinding {
         final success = await _performSwipe(
             direction: direction, distance: distance, key: key);
         return developer.ServiceExtensionResponse.result(
-          jsonEncode({
+          jsonEncode(_withFrameStatus({
             'success': success,
             'message': success ? 'Swipe successful' : 'Swipe failed'
-          }),
+          })),
         );
       } catch (e, stack) {
         return _errorResponse(e, stack);
@@ -425,12 +427,14 @@ class FlutterSkillBinding {
       try {
         final fromKey = parameters['fromKey'];
         final toKey = parameters['toKey'];
-        final success = await _performDrag(fromKey: fromKey, toKey: toKey);
+        final holdMs = int.tryParse(parameters['hold'] ?? '0') ?? 0;
+        final success =
+            await _performDrag(fromKey: fromKey, toKey: toKey, holdMs: holdMs);
         return developer.ServiceExtensionResponse.result(
-          jsonEncode({
+          jsonEncode(_withFrameStatus({
             'success': success,
             'message': success ? 'Drag successful' : 'Drag failed'
-          }),
+          })),
         );
       } catch (e, stack) {
         return _errorResponse(e, stack);
@@ -561,10 +565,20 @@ class FlutterSkillBinding {
       try {
         final quality = double.tryParse(parameters['quality'] ?? '1.0') ?? 1.0;
         final maxWidth = int.tryParse(parameters['maxWidth'] ?? '');
-        final base64Image =
+        final shot =
             await _takeScreenshot(quality: quality, maxWidth: maxWidth);
-        return developer.ServiceExtensionResponse.result(
-            jsonEncode({'image': base64Image}));
+        // Logical size + DPR let callers map image pixels back to the
+        // logical coordinates that tap_at/swipe expect.
+        final view = WidgetsBinding.instance.platformDispatcher.views.first;
+        final logical = view.physicalSize / view.devicePixelRatio;
+        return developer.ServiceExtensionResponse.result(jsonEncode({
+          'image': shot?.base64,
+          'imageWidth': shot?.width,
+          'imageHeight': shot?.height,
+          'logicalWidth': logical.width,
+          'logicalHeight': logical.height,
+          'devicePixelRatio': view.devicePixelRatio,
+        }));
       } catch (e, stack) {
         return _errorResponse(e, stack);
       }
@@ -613,7 +627,7 @@ class FlutterSkillBinding {
       try {
         final route = _getCurrentRoute();
         return developer.ServiceExtensionResponse.result(
-            jsonEncode({'route': route}));
+            jsonEncode({'route': route, 'routes': _routeEntries()}));
       } catch (e, stack) {
         return _errorResponse(e, stack);
       }
@@ -713,6 +727,144 @@ class FlutterSkillBinding {
       }
     });
 
+    // ==================== FOCUS / TYPING / TOGGLES / HOVER ====================
+
+    // type_text: insert into the focused field the way an IME commits text
+    // (replaces the current selection), so onChanged fires as for a user.
+    developer.registerExtension('ext.flutter.flutter_skill.typeText',
+        (method, parameters) async {
+      try {
+        final text = parameters['text'] ?? '';
+        final field = _findFocusedTextField();
+        if (field == null) {
+          return developer.ServiceExtensionResponse.result(jsonEncode({
+            'success': false,
+            'error': 'No focused text field. Use focus(key) or tap it first.',
+          }));
+        }
+        final value = field.textEditingValue;
+        final sel = value.selection.isValid
+            ? value.selection
+            : TextSelection.collapsed(offset: value.text.length);
+        final newText = value.text.replaceRange(sel.start, sel.end, text);
+        field.updateEditingValue(TextEditingValue(
+          text: newText,
+          selection: TextSelection.collapsed(offset: sel.start + text.length),
+        ));
+        await _settle();
+        return developer.ServiceExtensionResponse.result(jsonEncode(
+            {'success': true, 'message': 'Typed "$text"', 'value': newText}));
+      } catch (e, stack) {
+        return _errorResponse(e, stack);
+      }
+    });
+
+    // focus / blur: drive the field's own FocusNode.
+    developer.registerExtension('ext.flutter.flutter_skill.focus',
+        (method, parameters) async {
+      try {
+        final key = parameters['key'];
+        final field = key == null ? null : _findEditableText(key);
+        if (field == null) {
+          return developer.ServiceExtensionResponse.result(jsonEncode({
+            'success': false,
+            'error': 'No text field with key "$key"',
+          }));
+        }
+        field.widget.focusNode.requestFocus();
+        await _settle();
+        return developer.ServiceExtensionResponse.result(
+            jsonEncode({'success': true, 'message': 'Focused "$key"'}));
+      } catch (e, stack) {
+        return _errorResponse(e, stack);
+      }
+    });
+    developer.registerExtension('ext.flutter.flutter_skill.blur',
+        (method, parameters) async {
+      try {
+        final key = parameters['key'];
+        final field =
+            key == null ? _findFocusedTextField() : _findEditableText(key);
+        if (field == null) {
+          return developer.ServiceExtensionResponse.result(jsonEncode({
+            'success': false,
+            'error': 'No focused text field to blur',
+          }));
+        }
+        field.widget.focusNode.unfocus();
+        await _settle();
+        return developer.ServiceExtensionResponse.result(
+            jsonEncode({'success': true, 'message': 'Blurred'}));
+      } catch (e, stack) {
+        return _errorResponse(e, stack);
+      }
+    });
+
+    // set_checkbox: tap the toggle until it shows the requested state.
+    developer.registerExtension('ext.flutter.flutter_skill.setCheckbox',
+        (method, parameters) async {
+      try {
+        final key = parameters['key'] ?? '';
+        final wanted = parameters['checked'] == 'true';
+        final current = _getCheckboxState(key);
+        if (current == null) {
+          return developer.ServiceExtensionResponse.result(jsonEncode({
+            'success': false,
+            'error': 'No Checkbox/Switch (or *ListTile) with key "$key"',
+          }));
+        }
+        if (current != wanted) {
+          await _performTapWithDetails(key: key);
+        }
+        return developer.ServiceExtensionResponse.result(jsonEncode({
+          'success': _getCheckboxState(key) == wanted,
+          'checked': _getCheckboxState(key),
+        }));
+      } catch (e, stack) {
+        return _errorResponse(e, stack);
+      }
+    });
+
+    // hover: move a mouse pointer over the element (tooltips, hover styles).
+    developer.registerExtension('ext.flutter.flutter_skill.hover',
+        (method, parameters) async {
+      try {
+        final element =
+            _findElement(key: parameters['key'], text: parameters['text']);
+        final box = element?.renderObject;
+        if (element == null || box is! RenderBox || !box.hasSize) {
+          return developer.ServiceExtensionResponse.result(jsonEncode({
+            'success': false,
+            'error': 'Element not found or not laid out',
+          }));
+        }
+        final position = box.localToGlobal(box.size.center(Offset.zero));
+        final binding = WidgetsBinding.instance;
+        // One synthetic mouse device, added once: MouseTracker asserts on a
+        // repeated PointerAddedEvent for a device that was never removed.
+        if (!_syntheticMouseAdded) {
+          binding.handlePointerEvent(PointerAddedEvent(
+              position: position,
+              kind: ui.PointerDeviceKind.mouse,
+              device: _syntheticMouseDevice,
+              timeStamp: _pointerClock.elapsed));
+          _syntheticMouseAdded = true;
+        }
+        binding.handlePointerEvent(PointerHoverEvent(
+            position: position,
+            kind: ui.PointerDeviceKind.mouse,
+            device: _syntheticMouseDevice,
+            timeStamp: _pointerClock.elapsed));
+        await _settle();
+        return developer.ServiceExtensionResponse.result(jsonEncode({
+          'success': true,
+          'position': {'x': position.dx.round(), 'y': position.dy.round()},
+        }));
+      } catch (e, stack) {
+        return _errorResponse(e, stack);
+      }
+    });
+
     // ==================== PRESS KEY ====================
 
     developer.registerExtension('ext.flutter.flutter_skill.pressKey',
@@ -765,55 +917,21 @@ class FlutterSkillBinding {
         // ignore: unused_local_variable
         final isMeta = modifiers.contains('meta');
 
-        // Simulate key press through the focus system
-        final focusNode = FocusManager.instance.primaryFocus;
-        if (focusNode != null) {
-          // Use HardwareKeyboard simulation
-          // ignore: unused_local_variable
-          final binding = WidgetsBinding.instance;
-          // ignore: unused_local_variable
-          final pointer = _pointerCounter++;
-
-          // Create a RawKeyDownEvent and dispatch through the focus system
-          // ignore: unused_local_variable
-          final keyDown = KeyDownEvent(
-            physicalKey: PhysicalKeyboardKey.findKeyByCode(logicalKey.keyId) ??
-                PhysicalKeyboardKey.enter,
-            logicalKey: logicalKey,
-            timeStamp:
-                Duration(milliseconds: DateTime.now().millisecondsSinceEpoch),
-          );
-
-          // Dispatch through ServicesBinding
-          await ServicesBinding.instance.keyEventManager
-              .handleKeyData(ui.KeyData(
-            type: ui.KeyEventType.down,
-            timeStamp:
-                Duration(milliseconds: DateTime.now().millisecondsSinceEpoch),
-            physical: (PhysicalKeyboardKey.findKeyByCode(logicalKey.keyId) ??
-                    PhysicalKeyboardKey.enter)
-                .usbHidUsage,
-            logical: logicalKey.keyId,
-            character: key.length == 1 ? key : null,
-            synthesized: false,
-          ));
-
-          await Future.delayed(const Duration(milliseconds: 50));
-
-          await ServicesBinding.instance.keyEventManager
-              .handleKeyData(ui.KeyData(
-            type: ui.KeyEventType.up,
-            timeStamp:
-                Duration(milliseconds: DateTime.now().millisecondsSinceEpoch),
-            physical: (PhysicalKeyboardKey.findKeyByCode(logicalKey.keyId) ??
-                    PhysicalKeyboardKey.enter)
-                .usbHidUsage,
-            logical: logicalKey.keyId,
-            character: null,
-            synthesized: false,
-          ));
+        // Dispatch as a real hardware key: down (with modifiers held), up.
+        // Enter on a focused text field also performs the platform's "done"
+        // action, which is what fires onSubmitted on desktop.
+        final handled = await _pressHardwareKey(logicalKey, modifiers,
+            character: key.length == 1 ? key : null);
+        if (logicalKey == LogicalKeyboardKey.enter) {
+          _findFocusedTextField()?.performAction(TextInputAction.done);
         }
-
+        await _settle();
+        return developer.ServiceExtensionResponse.result(jsonEncode({
+          'success': true,
+          'message': 'Key pressed: $key',
+          'handled': handled,
+        }));
+        // ignore: dead_code
         return developer.ServiceExtensionResponse.result(
           jsonEncode({'success': true, 'message': 'Key pressed: $key'}),
         );
@@ -879,9 +997,9 @@ class FlutterSkillBinding {
         final x = double.tryParse(parameters['x'] ?? '0') ?? 0;
         final y = double.tryParse(parameters['y'] ?? '0') ?? 0;
         await _performTapAt(x, y);
-        return developer.ServiceExtensionResponse.result(
-          jsonEncode({'success': true, 'message': 'Tapped at ($x, $y)'}),
-        );
+        return developer.ServiceExtensionResponse.result(jsonEncode(
+            _withFrameStatus(
+                {'success': true, 'message': 'Tapped at ($x, $y)'})));
       } catch (e, stack) {
         return _errorResponse(e, stack);
       }
@@ -912,13 +1030,14 @@ class FlutterSkillBinding {
         final endX = double.tryParse(parameters['endX'] ?? '0') ?? 0;
         final endY = double.tryParse(parameters['endY'] ?? '0') ?? 0;
         final duration = int.tryParse(parameters['duration'] ?? '300') ?? 300;
+        final holdMs = int.tryParse(parameters['hold'] ?? '0') ?? 0;
         await _performSwipeCoordinates(startX, startY, endX, endY,
-            duration: duration);
+            duration: duration, holdMs: holdMs);
         return developer.ServiceExtensionResponse.result(
-          jsonEncode({
+          jsonEncode(_withFrameStatus({
             'success': true,
             'message': 'Swiped from ($startX, $startY) to ($endX, $endY)'
-          }),
+          })),
         );
       } catch (e, stack) {
         return _errorResponse(e, stack);
@@ -1519,27 +1638,28 @@ class FlutterSkillBinding {
       _indicatorOverlay!.showTap(center, hint: "Tapping '$targetText'");
     }
 
-    await _dispatchTap(center);
-
-    // Fallback: directly invoke the callback if the widget supports it
-    _tryInvokeCallback(element);
-
-    // Wait for frame to pump after callback invocation
-    await Future.delayed(const Duration(milliseconds: 300));
+    // Exactly one activation: drive the tap through the pointer pipeline
+    // when the element is really hittable at its center; otherwise (covered
+    // by an overlay, pointer ignored) invoke the widget's callback directly.
+    if (_isHittableAt(element, center)) {
+      await _dispatchTap(center);
+    } else {
+      _tryInvokeCallback(element);
+      await _settle();
+    }
 
     _log('Tap completed on (key: $key, text: $text)');
 
-    return {
+    return _withFrameStatus({
       'success': true,
       'message': 'Tap successful',
       'target': {'key': key, 'text': text},
       'position': {'x': center.dx.round(), 'y': center.dy.round()},
-    };
+    });
   }
 
-  /// Try to directly invoke the onPressed/onTap callback of a widget.
-  /// This is a fallback for when pointer dispatch doesn't trigger the callback
-  /// (e.g., when an overlay intercepts events or hit testing fails).
+  /// Directly invoke the onPressed/onTap callback of a widget — used only
+  /// when the element is not reachable by a pointer (see [_isHittableAt]).
   static void _tryInvokeCallback(Element element) {
     if (!element.mounted) return;
     final widget = element.widget;
@@ -1655,10 +1775,197 @@ class FlutterSkillBinding {
     return scored.map((e) => e.key).toList();
   }
 
-  static Future<void> _dispatchTap(Offset position) async {
+  // ==================== SYNTHETIC KEYBOARD ====================
+
+  /// USB HID usage codes for the physical keys we can synthesize; the
+  /// framework requires physical/logical pairs to be consistent.
+  static const Map<int, int> _physicalUsageByLogicalId = {
+    0x100000008: 0x0007002a, // backspace
+    0x100000009: 0x0007002b, // tab
+    0x10000000d: 0x00070028, // enter
+    0x10000001b: 0x00070029, // escape
+    0x10000007f: 0x0007004c, // delete
+    0x100000301: 0x00070051, // arrowDown
+    0x100000302: 0x00070050, // arrowLeft
+    0x100000303: 0x0007004f, // arrowRight
+    0x100000304: 0x00070052, // arrowUp
+    0x100000305: 0x0007004d, // end
+    0x100000306: 0x0007004a, // home
+    0x100000307: 0x0007004e, // pageDown
+    0x100000308: 0x0007004b, // pageUp
+    0x20: 0x0007002c, // space
+  };
+
+  /// Device id of the synthetic mouse used by `hover` (added on first use).
+  static const int _syntheticMouseDevice = 0x5ca1;
+  static bool _syntheticMouseAdded = false;
+
+  static PhysicalKeyboardKey _physicalFor(LogicalKeyboardKey logical) {
+    final id = logical.keyId;
+    final mapped = _physicalUsageByLogicalId[id];
+    if (mapped != null) return PhysicalKeyboardKey(mapped);
+    // Unicode letters/digits: keyA..keyZ = 0x70004.., digit1..9,0 = 0x7001e..
+    if (id >= 0x61 && id <= 0x7a)
+      return PhysicalKeyboardKey(0x00070004 + id - 0x61);
+    if (id >= 0x31 && id <= 0x39)
+      return PhysicalKeyboardKey(0x0007001e + id - 0x31);
+    if (id == 0x30) return const PhysicalKeyboardKey(0x00070027);
+    return PhysicalKeyboardKey.findKeyByCode(id) ?? PhysicalKeyboardKey.enter;
+  }
+
+  static const Map<String, (LogicalKeyboardKey, PhysicalKeyboardKey)>
+      _modifierKeys = {
+    'shift': (LogicalKeyboardKey.shiftLeft, PhysicalKeyboardKey.shiftLeft),
+    'ctrl': (LogicalKeyboardKey.controlLeft, PhysicalKeyboardKey.controlLeft),
+    'control': (
+      LogicalKeyboardKey.controlLeft,
+      PhysicalKeyboardKey.controlLeft
+    ),
+    'alt': (LogicalKeyboardKey.altLeft, PhysicalKeyboardKey.altLeft),
+    'meta': (LogicalKeyboardKey.metaLeft, PhysicalKeyboardKey.metaLeft),
+  };
+
+  /// Delivers one synthetic [KeyEvent] the way the engine's key path does
+  /// once a platform message is decoded: [HardwareKeyboard] records the
+  /// pressed state, then the [KeyMessage] goes to the global handler
+  /// (FocusManager → Shortcuts/Actions → text-editing shortcuts).
+  /// Returns whether a handler claimed it.
+  static bool _deliverKey(KeyEvent event) {
+    HardwareKeyboard.instance.handleKeyEvent(event);
+    final handler = ServicesBinding.instance.keyEventManager.keyMessageHandler;
+    return handler?.call(KeyMessage(<KeyEvent>[event], null)) ?? false;
+  }
+
+  /// Sends a physical key press (down, up) with [modifiers] held around it.
+  static Future<bool> _pressHardwareKey(
+      LogicalKeyboardKey logical, List<String> modifiers,
+      {String? character}) async {
+    Duration now() => _pointerClock.elapsed;
+    final held = <(LogicalKeyboardKey, PhysicalKeyboardKey)>[];
+    for (final m in modifiers) {
+      final pair = _modifierKeys[m.toLowerCase()];
+      if (pair == null) continue;
+      _deliverKey(KeyDownEvent(
+          physicalKey: pair.$2, logicalKey: pair.$1, timeStamp: now()));
+      held.add(pair);
+    }
+    final physical = _physicalFor(logical);
+    // Platforms report no character while a modifier is held (Ctrl+A is a
+    // shortcut, not text input).
+    final handled = _deliverKey(KeyDownEvent(
+      physicalKey: physical,
+      logicalKey: logical,
+      character: held.isEmpty ? character : null,
+      timeStamp: now(),
+    ));
+    await Future<void>.delayed(const Duration(milliseconds: 40));
+    _deliverKey(KeyUpEvent(
+        physicalKey: physical, logicalKey: logical, timeStamp: now()));
+    for (final pair in held.reversed) {
+      _deliverKey(KeyUpEvent(
+          physicalKey: pair.$2, logicalKey: pair.$1, timeStamp: now()));
+    }
+    return handled;
+  }
+
+  // ==================== SYNTHETIC POINTER ENGINE ====================
+  //
+  // Every emulated input goes through [_emitGesture]. Flutter's gesture
+  // recognizers and scroll physics derive velocities from event
+  // timestamps, so each event carries a monotonically increasing
+  // [PointerEvent.timeStamp]; the pointer is always released, even if a
+  // handler throws; and the call returns only after the framework has
+  // rendered the frame that reflects the input, so a state query issued
+  // right afterwards observes the result.
+
+  static final Stopwatch _pointerClock = Stopwatch()..start();
+
+  static Future<void> _emitGesture({
+    required Offset from,
+    Offset? to,
+    Duration hold = Duration.zero,
+    Duration travel = const Duration(milliseconds: 300),
+  }) async {
     final binding = WidgetsBinding.instance;
     final pointer = _pointerCounter++;
+    final end = to ?? from;
+    Duration now() => _pointerClock.elapsed;
 
+    binding.handlePointerEvent(
+        PointerDownEvent(position: from, pointer: pointer, timeStamp: now()));
+    try {
+      if (hold > Duration.zero) await Future<void>.delayed(hold);
+      if (end != from) {
+        // About one move per frame; enough steps to clear the touch slop
+        // early and give the velocity tracker a smooth sample history.
+        final steps = (travel.inMilliseconds / 16).round().clamp(4, 60);
+        final stepDelay = travel ~/ steps;
+        var last = from;
+        for (var i = 1; i <= steps; i++) {
+          await Future<void>.delayed(stepDelay);
+          final position = Offset.lerp(from, end, i / steps)!;
+          binding.handlePointerEvent(PointerMoveEvent(
+            position: position,
+            delta: position - last,
+            pointer: pointer,
+            timeStamp: now(),
+          ));
+          last = position;
+        }
+      }
+    } finally {
+      binding.handlePointerEvent(
+          PointerUpEvent(position: end, pointer: pointer, timeStamp: now()));
+    }
+    await _settle();
+  }
+
+  /// Completes once two frames have rendered: the one that runs the input's
+  /// callbacks and the one that paints the resulting state. Each wait is
+  /// bounded: a minimized/occluded window produces no frames on some
+  /// platforms (Windows), and an action must never hang on that.
+  static Future<void> _settle() async {
+    _framesStalled = !await _nextFrame() && !await _nextFrame();
+  }
+
+  /// True when the last action saw no frame at all — the app is most likely
+  /// minimized or hidden, so nothing it did is observable yet.
+  static bool _framesStalled = false;
+
+  static const _stalledWarning =
+      'No frame was rendered after this action; the app window is probably '
+      'minimized or hidden. Restore it before reading state or taking a '
+      'screenshot.';
+
+  /// Adds the stalled-frames warning to an action response when relevant.
+  static Map<String, dynamic> _withFrameStatus(Map<String, dynamic> response) =>
+      _framesStalled ? {...response, 'warning': _stalledWarning} : response;
+
+  static Future<bool> _nextFrame() => SchedulerBinding.instance.endOfFrame
+      .then((_) => true)
+      .timeout(const Duration(milliseconds: 500), onTimeout: () => false);
+
+  /// Whether a pointer at [position] would reach [element] (or a descendant),
+  /// i.e. nothing opaque covers it and it takes part in hit testing.
+  static bool _isHittableAt(Element element, Offset position) {
+    final target = element.renderObject;
+    if (target == null) return false;
+    final binding = WidgetsBinding.instance;
+    final result = HitTestResult();
+    binding.hitTestInView(
+        result, position, binding.platformDispatcher.views.first.viewId);
+    for (final entry in result.path) {
+      RenderObject? node =
+          entry.target is RenderObject ? entry.target as RenderObject : null;
+      while (node != null) {
+        if (identical(node, target)) return true;
+        node = node.parent;
+      }
+    }
+    return false;
+  }
+
+  static Future<void> _dispatchTap(Offset position) async {
     // Show animated character walking to position and tapping
     if (_indicatorsEnabled && _indicatorOverlay != null) {
       // Use last position as starting point for walking animation
@@ -1673,18 +1980,12 @@ class FlutterSkillBinding {
       await Future.delayed(const Duration(milliseconds: 200));
     }
 
-    binding.handlePointerEvent(
-        PointerDownEvent(position: position, pointer: pointer));
-    await Future.delayed(const Duration(milliseconds: 50));
-    binding.handlePointerEvent(
-        PointerUpEvent(position: position, pointer: pointer));
+    await _emitGesture(from: position, hold: const Duration(milliseconds: 50));
 
     // Show tap ripple after character
     if (_indicatorsEnabled && _indicatorOverlay != null) {
       _indicatorOverlay!.showTap(position);
     }
-
-    await Future.delayed(const Duration(milliseconds: 100));
   }
 
   // ignore: unused_element
@@ -1878,11 +2179,16 @@ class FlutterSkillBinding {
 
   static Future<Map<String, dynamic>> _performScroll(
       {String? key, String? text}) async {
-    final element = _findElement(key: key, text: text);
+    var element = _findElement(key: key, text: text);
+    // Lazily built lists (ListView.builder, slivers) only mount the rows in
+    // view, so an off-screen target has no element yet. Page through every
+    // scrollable until it appears, then let ensureVisible do the fine work.
+    element ??= await _revealByPaging(() => _findElement(key: key, text: text));
     if (element == null) {
       return {
         'success': false,
-        'error': 'Element not found (key: $key, text: $text)'
+        'error': 'Element not found (key: $key, text: $text), '
+            'also after paging through all scrollables',
       };
     }
 
@@ -1926,15 +2232,7 @@ class FlutterSkillBinding {
 
     final center =
         renderObject.localToGlobal(renderObject.size.center(Offset.zero));
-    final binding = WidgetsBinding.instance;
-    final pointer = _pointerCounter++;
-
-    binding.handlePointerEvent(
-        PointerDownEvent(position: center, pointer: pointer));
-    await Future.delayed(Duration(milliseconds: duration));
-    binding
-        .handlePointerEvent(PointerUpEvent(position: center, pointer: pointer));
-    await Future.delayed(const Duration(milliseconds: 100));
+    await _emitGesture(from: center, hold: Duration(milliseconds: duration));
 
     _log('Long press completed (key: $key, text: $text)');
     return true;
@@ -1976,31 +2274,14 @@ class FlutterSkillBinding {
         return false;
     }
 
-    final pointer = _pointerCounter++;
-    final end = start + delta;
-
-    binding.handlePointerEvent(
-        PointerDownEvent(position: start, pointer: pointer));
-    await Future.delayed(const Duration(milliseconds: 16));
-
-    const steps = 10;
-    for (int i = 1; i <= steps; i++) {
-      final current = Offset.lerp(start, end, i / steps)!;
-      binding.handlePointerEvent(PointerMoveEvent(
-          position: current,
-          pointer: pointer,
-          delta: delta / steps.toDouble()));
-      await Future.delayed(const Duration(milliseconds: 16));
-    }
-
-    binding.handlePointerEvent(PointerUpEvent(position: end, pointer: pointer));
-    await Future.delayed(const Duration(milliseconds: 100));
+    await _emitGesture(from: start, to: start + delta);
 
     _log('Swipe $direction completed');
     return true;
   }
 
-  static Future<bool> _performDrag({String? fromKey, String? toKey}) async {
+  static Future<bool> _performDrag(
+      {String? fromKey, String? toKey, int holdMs = 0}) async {
     if (fromKey == null || toKey == null) return false;
 
     final fromElement = _findElementByKey(fromKey);
@@ -2014,23 +2295,14 @@ class FlutterSkillBinding {
     final start = fromRender.localToGlobal(fromRender.size.center(Offset.zero));
     final end = toRender.localToGlobal(toRender.size.center(Offset.zero));
 
-    final binding = WidgetsBinding.instance;
-    final pointer = _pointerCounter++;
-
-    binding.handlePointerEvent(
-        PointerDownEvent(position: start, pointer: pointer));
-    await Future.delayed(const Duration(milliseconds: 100));
-
-    const steps = 20;
-    for (int i = 1; i <= steps; i++) {
-      final current = Offset.lerp(start, end, i / steps)!;
-      binding.handlePointerEvent(
-          PointerMoveEvent(position: current, pointer: pointer));
-      await Future.delayed(const Duration(milliseconds: 16));
-    }
-
-    binding.handlePointerEvent(PointerUpEvent(position: end, pointer: pointer));
-    await Future.delayed(const Duration(milliseconds: 100));
+    // `hold` lets LongPressDraggable (and long-press-to-select lists)
+    // recognise the drag before the pointer starts moving.
+    await _emitGesture(
+      from: start,
+      to: end,
+      hold: Duration(milliseconds: holdMs),
+      travel: const Duration(milliseconds: 400),
+    );
 
     _log('Drag from $fromKey to $toKey completed');
     return true;
@@ -2057,16 +2329,13 @@ class FlutterSkillBinding {
   // ==================== COORDINATE-BASED ACTIONS ====================
 
   static Future<void> _performTapAt(double x, double y) async {
-    final position = Offset(x, y);
-    await _dispatchTap(position);
+    await _dispatchTap(Offset(x, y));
     _log('Tap at coordinates ($x, $y) completed');
   }
 
   static Future<void> _performLongPressAt(double x, double y,
       {int duration = 500}) async {
     final position = Offset(x, y);
-    final binding = WidgetsBinding.instance;
-    final pointer = _pointerCounter++;
 
     // Show animated character holding
     if (_indicatorsEnabled && _indicatorOverlay != null) {
@@ -2079,12 +2348,7 @@ class FlutterSkillBinding {
       );
     }
 
-    binding.handlePointerEvent(
-        PointerDownEvent(position: position, pointer: pointer));
-    await Future.delayed(Duration(milliseconds: duration));
-    binding.handlePointerEvent(
-        PointerUpEvent(position: position, pointer: pointer));
-    await Future.delayed(const Duration(milliseconds: 100));
+    await _emitGesture(from: position, hold: Duration(milliseconds: duration));
 
     _log('Long press at coordinates ($x, $y) completed');
   }
@@ -2095,10 +2359,8 @@ class FlutterSkillBinding {
     double endX,
     double endY, {
     int duration = 300,
+    int holdMs = 0,
   }) async {
-    final binding = WidgetsBinding.instance;
-    final pointer = _pointerCounter++;
-
     final start = Offset(startX, startY);
     final end = Offset(endX, endY);
     final delta = end - start;
@@ -2112,25 +2374,12 @@ class FlutterSkillBinding {
       _indicatorOverlay!.showSwipe(start, end);
     }
 
-    binding.handlePointerEvent(
-        PointerDownEvent(position: start, pointer: pointer));
-    await Future.delayed(const Duration(milliseconds: 16));
-
-    final steps = (duration / 16).round().clamp(5, 30);
-    final stepDuration = duration ~/ steps;
-
-    for (int i = 1; i <= steps; i++) {
-      final current = Offset.lerp(start, end, i / steps)!;
-      binding.handlePointerEvent(PointerMoveEvent(
-        position: current,
-        pointer: pointer,
-        delta: delta / steps.toDouble(),
-      ));
-      await Future.delayed(Duration(milliseconds: stepDuration));
-    }
-
-    binding.handlePointerEvent(PointerUpEvent(position: end, pointer: pointer));
-    await Future.delayed(const Duration(milliseconds: 100));
+    await _emitGesture(
+      from: start,
+      to: end,
+      hold: Duration(milliseconds: holdMs),
+      travel: Duration(milliseconds: duration),
+    );
 
     _log('Swipe from ($startX, $startY) to ($endX, $endY) completed');
   }
@@ -2364,6 +2613,12 @@ class FlutterSkillBinding {
           };
           entry['visible'] = hasValidSize;
           entry['coordinatesReliable'] = coordinatesReliable;
+          // `visible` only says the box has a size; `hittable` says a pointer
+          // at its center actually reaches it (not offstage, not covered by
+          // a bar/overlay) — the flag to trust before tapping/dragging.
+          entry['hittable'] = coordinatesReliable &&
+              _isHittableAt(
+                  element, offset + renderObject.size.center(Offset.zero));
 
           // Add warning for unreliable coordinates
           if (!coordinatesReliable && isAtOrigin) {
@@ -2585,6 +2840,8 @@ class FlutterSkillBinding {
               offset.dx.isFinite &&
               offset.dy.isFinite;
           state['visible'] = isVisible;
+          state['hittable'] = isVisible &&
+              _isHittableAt(element, offset + size.center(Offset.zero));
 
           // Cache element for performance optimization
           if (isVisible && refId.isNotEmpty) {
@@ -2594,6 +2851,7 @@ class FlutterSkillBinding {
           // Element has no render box or size - set default bounds
           elementEntry['bounds'] = {'x': 0, 'y': 0, 'w': 0, 'h': 0};
           state['visible'] = false;
+          state['hittable'] = false;
         }
 
         // Merge state information
@@ -2890,13 +3148,30 @@ class FlutterSkillBinding {
     if (element == null) return null;
 
     final widget = element.widget;
-    if (widget is Checkbox) {
-      return widget.value;
-    }
-    if (widget is Switch) {
-      return widget.value;
-    }
+    if (widget is Checkbox) return widget.value;
+    if (widget is Switch) return widget.value;
+    if (widget is CheckboxListTile) return widget.value;
+    if (widget is SwitchListTile) return widget.value;
     return null;
+  }
+
+  /// The EditableText inside the widget with [key] (TextField, TextFormField
+  /// or a wrapper), or null.
+  static EditableTextState? _findEditableText(String key) {
+    final element = _findElementByKey(key);
+    if (element == null) return null;
+    EditableTextState? found;
+    void visit(Element e) {
+      if (found != null) return;
+      if (e is StatefulElement && e.state is EditableTextState) {
+        found = e.state as EditableTextState;
+        return;
+      }
+      e.visitChildren(visit);
+    }
+
+    visit(element);
+    return found;
   }
 
   static double? _getSliderValue(String key) {
@@ -2943,7 +3218,8 @@ class FlutterSkillBinding {
   /// avoiding the bug where DFS finds a RepaintBoundary from an old route.
   /// Returns the image in logical pixel dimensions scaled by [pixelRatio].
   static Future<ui.Image?> _captureFullScene({double pixelRatio = 1.0}) async {
-    await WidgetsBinding.instance.endOfFrame;
+    // Bounded: a hidden window may never deliver a frame (see _nextFrame).
+    await _nextFrame();
 
     final binding = WidgetsBinding.instance;
     // ignore: invalid_use_of_protected_member
@@ -2994,7 +3270,7 @@ class FlutterSkillBinding {
     return boundary!.toImage(pixelRatio: pixelRatio);
   }
 
-  static Future<String?> _takeScreenshot(
+  static Future<_Screenshot?> _takeScreenshot(
       {double quality = 1.0, int? maxWidth}) async {
     try {
       // Use quality as pixel ratio (lower = smaller image)
@@ -3026,7 +3302,8 @@ class FlutterSkillBinding {
 
       final byteData = await image.toByteData(format: ui.ImageByteFormat.png);
       if (byteData == null) return null;
-      return base64Encode(byteData.buffer.asUint8List());
+      return _Screenshot(base64Encode(byteData.buffer.asUint8List()),
+          image.width, image.height);
     } catch (e) {
       _log('Screenshot failed: $e');
       return null;
@@ -3138,26 +3415,56 @@ class FlutterSkillBinding {
 
   // ==================== NAVIGATION ====================
 
-  static String? _getCurrentRoute() {
-    String? currentRoute;
-    final binding = WidgetsBinding.instance;
-
-    void visit(Element element) {
-      if (element.widget is ModalRoute) {
-        final route = ModalRoute.of(element);
-        if (route != null) {
-          currentRoute = route.settings.name;
+  /// Every route currently mounted, in stack order (outer navigator first,
+  /// each navigator bottom → top, nested navigators after the route that
+  /// hosts them). Each entry: `name` (RouteSettings.name — go_router sets
+  /// the route name or path), `key` (Page key), `isCurrent`, `depth`
+  /// (navigator nesting), `type`.
+  ///
+  /// Routes are found through the `_ModalScopeStatus` inherited widget that
+  /// every ModalRoute installs above its content: walking the element tree
+  /// meets each route exactly once and does not register dependencies (as
+  /// `ModalRoute.of` would). Field access is dynamic because the class is
+  /// private to the framework; its members are public and stable.
+  static List<Map<String, dynamic>> _routeEntries() {
+    final entries = <Map<String, dynamic>>[];
+    void visit(Element element, int depth) {
+      var next = depth;
+      final widget = element.widget;
+      if (widget.runtimeType.toString() == '_ModalScopeStatus') {
+        try {
+          final route = (widget as dynamic).route as Route<dynamic>;
+          final settings = route.settings;
+          entries.add({
+            'name': settings.name,
+            'key': settings is Page ? settings.key?.toString() : null,
+            'isCurrent': route.isCurrent,
+            'depth': depth,
+            'type': route.runtimeType.toString(),
+          });
+          next = depth + 1;
+        } catch (_) {
+          // framework internals changed shape; skip silently
         }
       }
-      element.visitChildren(visit);
+      element.visitChildren((child) => visit(child, next));
     }
 
     // ignore: invalid_use_of_protected_member
-    if (binding.rootElement != null) {
-      visit(binding.rootElement!);
-    }
+    final rootElement = WidgetsBinding.instance.rootElement;
+    if (rootElement != null) visit(rootElement, 0);
+    return entries;
+  }
 
-    return currentRoute;
+  /// Name of the topmost current route (innermost navigator wins). Falls
+  /// back to the page key when the route has no name.
+  static String? _getCurrentRoute() {
+    Map<String, dynamic>? current;
+    for (final entry in _routeEntries()) {
+      if (entry['isCurrent'] == true) current = entry;
+    }
+    if (current == null) return null;
+    return (current['name'] ?? current['key']) as String?;
   }
 
   static bool _goBack() {
@@ -3174,16 +3481,50 @@ class FlutterSkillBinding {
 
   static List<String> _getNavigationStack() {
     final routes = <String>[];
-    final context = _findNavigatorContext();
-    if (context == null) return routes;
+    for (final entry in _routeEntries()) {
+      final label = (entry['name'] ?? entry['key'] ?? entry['type']) as String;
+      routes.add(label);
+    }
+    return routes;
+  }
 
-    // This is a simplified version - full implementation would need NavigatorState access
-    final currentRoute = _getCurrentRoute();
-    if (currentRoute != null) {
-      routes.add(currentRoute);
+  /// Pages every mounted vertical/horizontal scrollable from its start to
+  /// its end (viewport-sized jumps, one frame each) until [find] returns an
+  /// element. Returns it, or null when nothing appeared anywhere.
+  static Future<Element?> _revealByPaging(Element? Function() find) async {
+    final positions = <ScrollPosition>[];
+    void visit(Element e) {
+      if (e is StatefulElement && e.state is ScrollableState) {
+        final position = (e.state as ScrollableState).position;
+        if (position.hasContentDimensions &&
+            position.maxScrollExtent > position.minScrollExtent) {
+          positions.add(position);
+        }
+      }
+      e.visitChildren(visit);
     }
 
-    return routes;
+    // ignore: invalid_use_of_protected_member
+    final rootElement = WidgetsBinding.instance.rootElement;
+    if (rootElement != null) visit(rootElement);
+
+    for (final position in positions) {
+      final origin = position.pixels;
+      final step = position.viewportDimension * 0.8;
+      var offset = position.minScrollExtent;
+      while (true) {
+        position.jumpTo(offset);
+        await _settle();
+        final found = find();
+        if (found != null) return found;
+        if (offset >= position.maxScrollExtent) break;
+        offset = (offset + step)
+            .clamp(position.minScrollExtent, position.maxScrollExtent);
+      }
+      position.jumpTo(origin);
+      await _settle();
+    }
+    return null;
   }
 
   static BuildContext? _findNavigatorContext() {
@@ -4208,7 +4549,7 @@ class _ParticleEffectPainter extends CustomPainter {
         const Color(0xFFFF5722),
         i / 6,
       )!
-          .withOpacity(0.8 * (1 - progress));
+          .withValues(alpha: (0.8 * (1 - progress)).clamp(0.0, 1.0));
 
       particlePaint.color = color;
       canvas.drawCircle(Offset(x, y), 3 * (1 - progress), particlePaint);
@@ -4917,4 +5258,12 @@ class _ActionHint extends StatelessWidget {
       },
     );
   }
+}
+
+/// PNG screenshot payload with its pixel dimensions.
+class _Screenshot {
+  const _Screenshot(this.base64, this.width, this.height);
+  final String base64;
+  final int width;
+  final int height;
 }

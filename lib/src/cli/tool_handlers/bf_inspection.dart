@@ -203,7 +203,13 @@ extension _BfInspection on FlutterMcpServer {
             "error": "key or element parameter required"
           };
         }
-        return await fc.getWidgetProperties(wpKey);
+        final props = await fc.getWidgetProperties(wpKey);
+        return props ??
+            {
+              "success": false,
+              "error": "No mounted widget with key '$wpKey' "
+                  "(is it on the current screen / built?)",
+            };
       case 'get_text_content':
         if (client is BridgeDriver) {
           final text = await client.getText();

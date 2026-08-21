@@ -29,6 +29,7 @@ extension _BridgeFlutterHandlers on FlutterMcpServer {
       return await (_client as BridgeDriver).callTool(toolName, toolParams);
     }
 
-    throw Exception("Unknown tool: $name");
+    throw Exception("Tool '$name' is not implemented for the "
+        "${client.runtimeType} driver (or returned no result)");
   }
 }

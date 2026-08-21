@@ -50,8 +50,14 @@ extension _BfBatch on FlutterMcpServer {
         final fc = _asFlutterClient(client!, 'tap_at');
         final x = (args['x'] as num).toDouble();
         final y = (args['y'] as num).toDouble();
-        await fc.tapAt(x, y);
-        return {"success": true, "action": "tap_at", "x": x, "y": y};
+        final tapped = await fc.tapAt(x, y);
+        return {
+          "success": true,
+          "action": "tap_at",
+          "x": x,
+          "y": y,
+          if (tapped['warning'] != null) "warning": tapped['warning'],
+        };
 
       case 'long_press_at':
         if (client is BridgeDriver) {

@@ -728,11 +728,17 @@ class FlutterMcpServer {
     final actions =
         (args['actions'] ?? args['commands'] ?? []) as List<dynamic>;
     final stopOnFailure = args['stop_on_failure'] ?? true;
+    // A step often triggers a route/tab transition; give the next step's
+    // target time to be built (default 250 ms, tunable per batch).
+    final stepDelayMs = (args['step_delay_ms'] as num?)?.toInt() ?? 250;
 
     final results = <Map<String, dynamic>>[];
     var allSuccess = true;
 
     for (var i = 0; i < actions.length; i++) {
+      if (i > 0 && stepDelayMs > 0) {
+        await Future.delayed(Duration(milliseconds: stepDelayMs));
+      }
       final action = actions[i] as Map<String, dynamic>;
       final actionName =
           (action['action'] ?? action['tool'] ?? action['name']) as String;

@@ -22,12 +22,13 @@ extension _BfInteraction on FlutterMcpServer {
             };
           }
           final fc = _asFlutterClient(client!, 'tap (coordinates)');
-          await fc.tapAt(x.toDouble(), y.toDouble());
+          final tapped = await fc.tapAt(x.toDouble(), y.toDouble());
           return {
             "success": true,
             "method": "coordinates",
             "message": "Tapped at ($x, $y)",
             "position": {"x": x, "y": y},
+            if (tapped['warning'] != null) "warning": tapped['warning'],
           };
         }
 
@@ -53,6 +54,7 @@ extension _BfInteraction on FlutterMcpServer {
           "method": args['key'] != null ? "key" : "text",
           "message": "Tapped",
           if (result['position'] != null) "position": result['position'],
+          if (result['warning'] != null) "warning": result['warning'],
         };
 
       case 'fill':
@@ -136,6 +138,19 @@ extension _BfInteraction on FlutterMcpServer {
         return success ? "Double tapped" : "Double tap failed";
       case 'swipe':
         final distance = (args['distance'] ?? 300).toDouble();
+        if (client is FlutterSkillClient) {
+          final swiped = await client.swipeWithDetails(
+              direction: args['direction'],
+              distance: distance,
+              key: args['key']);
+          return {
+            "success": swiped['success'] == true,
+            "message": swiped['success'] == true
+                ? "Swiped ${args['direction']}"
+                : "Swipe failed",
+            if (swiped['warning'] != null) "warning": swiped['warning'],
+          };
+        }
         final success = await client!.swipe(
             direction: args['direction'], distance: distance, key: args['key']);
         return success ? "Swiped ${args['direction']}" : "Swipe failed";
@@ -156,20 +171,31 @@ extension _BfInteraction on FlutterMcpServer {
           return result['success'] == true ? "Dragged" : "Drag failed";
         }
         final fc = _asFlutterClient(client!, 'drag');
-        // Support coordinate-based drag via swipeCoordinates for FlutterClient
-        if (args['start_x'] != null) {
+        // Clients may send numbers as strings; accept both.
+        double? num_(Object? v) =>
+            v is num ? v.toDouble() : double.tryParse(v?.toString() ?? '');
+        final holdMs = num_(args['hold_ms'])?.toInt() ?? 0;
+        // Coordinate-based drag shares the swipe engine (with hold)
+        if (num_(args['start_x']) != null) {
           final result = await fc.swipeCoordinates(
-            (args['start_x'] as num).toDouble(),
-            (args['start_y'] as num).toDouble(),
-            (args['end_x'] as num).toDouble(),
-            (args['end_y'] as num).toDouble(),
+            num_(args['start_x'])!,
+            num_(args['start_y']) ?? 0,
+            num_(args['end_x']) ?? 0,
+            num_(args['end_y']) ?? 0,
+            duration: num_(args['duration_ms'])?.toInt() ?? 400,
+            holdMs: holdMs,
           );
           return result;
         }
-        final success = await fc.drag(
+        final dragged = await fc.dragWithDetails(
             fromKey: args['from_key'] as String? ?? '',
-            toKey: args['to_key'] as String? ?? '');
-        return success ? "Dragged" : "Drag failed";
+            toKey: args['to_key'] as String? ?? '',
+            holdMs: holdMs);
+        return {
+          "success": dragged['success'] == true,
+          "message": dragged['success'] == true ? "Dragged" : "Drag failed",
+          if (dragged['warning'] != null) "warning": dragged['warning'],
+        };
 
       // State & Validation
       case 'get_text_value':
@@ -185,7 +211,42 @@ extension _BfInteraction on FlutterMcpServer {
               .callMethod('get_checkbox_state', {'key': args['key']});
         }
         final fc = _asFlutterClient(client!, 'get_checkbox_state');
-        return await fc.getCheckboxState(args['key']);
+        final checked = await fc.getCheckboxState(args['key']);
+        return checked == null
+            ? {"success": false, "error": "No Checkbox/Switch with that key"}
+            : {"success": true, "checked": checked};
+      case 'set_checkbox':
+        if (client is BridgeDriver) {
+          return await client.callMethod(
+              'set_checkbox', {'key': args['key'], 'checked': args['checked']});
+        }
+        return await _asFlutterClient(client!, 'set_checkbox')
+            .setCheckbox(args['key'] as String, args['checked'] == true);
+      case 'type_text':
+        if (client is BridgeDriver) {
+          return await client.callMethod('type_text', {'text': args['text']});
+        }
+        return await _asFlutterClient(client!, 'type_text')
+            .typeText(args['text'] as String? ?? '');
+      case 'focus':
+        if (client is BridgeDriver) {
+          return await client.callMethod('focus', {'key': args['key']});
+        }
+        return await _asFlutterClient(client!, 'focus')
+            .focus(args['key'] as String? ?? '');
+      case 'blur':
+        if (client is BridgeDriver) {
+          return await client.callMethod('blur', {'key': args['key']});
+        }
+        return await _asFlutterClient(client!, 'blur')
+            .blur(key: args['key'] as String?);
+      case 'hover':
+        if (client is BridgeDriver) {
+          return await client.callMethod('hover',
+              {'key': args['key'], 'text': args['text'], 'ref': args['ref']});
+        }
+        return await _asFlutterClient(client!, 'hover')
+            .hover(key: args['key'] as String?, text: args['text'] as String?);
       case 'get_slider_value':
         if (client is BridgeDriver) {
           return await client
@@ -231,7 +292,9 @@ extension _BfInteraction on FlutterMcpServer {
         }
         // Flutter VM Service — use the registered pressKey extension
         if (client is FlutterSkillClient) {
-          final result = await client.pressKey(key);
+          final modifiers =
+              (args['modifiers'] as List?)?.map((m) => m.toString()).toList();
+          final result = await client.pressKey(key, modifiers: modifiers);
           if (result['success'] == true) {
             return {"success": true, "message": "Key pressed: $key"};
           }
