@@ -1040,14 +1040,12 @@ class FlutterSkillBinding {
   // ==================== ELEMENT FINDING ====================
 
   static Element? _findElementByKey(String key) {
-    Element? found;
+    final matches = <Element>[];
     void visit(Element element) {
-      if (found != null) return;
       final widget = element.widget;
       if (widget.key is ValueKey<String> &&
           (widget.key as ValueKey<String>).value == key) {
-        found = element;
-        return;
+        matches.add(element);
       }
       element.visitChildren(visit);
     }
@@ -1057,21 +1055,17 @@ class FlutterSkillBinding {
     if (binding.rootElement != null) {
       visit(binding.rootElement!);
     }
-    return found;
+    return _preferTopmostMatch(matches);
   }
 
   static Element? _findElementByText(String text) {
-    Element? found;
+    final matches = <Element>[];
     void visit(Element element) {
-      if (found != null) return;
       final widget = element.widget;
       if (widget is Text && widget.data == text) {
-        found = element;
-        return;
-      }
-      if (widget is RichText && widget.text.toPlainText() == text) {
-        found = element;
-        return;
+        matches.add(element);
+      } else if (widget is RichText && widget.text.toPlainText() == text) {
+        matches.add(element);
       }
       element.visitChildren(visit);
     }
@@ -1081,7 +1075,25 @@ class FlutterSkillBinding {
     if (binding.rootElement != null) {
       visit(binding.rootElement!);
     }
-    return found;
+    return _preferTopmostMatch(matches);
+  }
+
+  /// Picks the best match among duplicates that can appear across stacked
+  /// routes/overlays.
+  ///
+  /// The element tree is walked in pre-order, so a background route (mounted
+  /// first, still alive underneath a pushed route) is collected *before* the
+  /// foreground route. Returning the first match would therefore tap an element
+  /// that is invisible behind the current screen — e.g. a tab label on the
+  /// visible screen that also exists as a list subtitle on the screen behind it.
+  ///
+  /// In Overlay/Navigator order the foreground route is mounted last, so it is
+  /// visited last. Returning the last match targets the screen the user actually
+  /// sees. (A hit-test at each candidate's center would be even more precise and
+  /// could be layered on top of this later.)
+  static Element? _preferTopmostMatch(List<Element> matches) {
+    if (matches.isEmpty) return null;
+    return matches.last;
   }
 
   static Element? _findElement({String? key, String? text}) {
