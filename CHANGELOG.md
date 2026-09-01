@@ -1,3 +1,56 @@
+## 0.9.37
+
+**Ships seven fixes that were merged months ago but never released, plus npm packaging and release-pipeline repairs**
+
+The v0.9.24 and v0.9.36 tags were cut from commits that are not on `main`, so
+everything merged since v0.9.35 stayed unreleased. This version delivers it all.
+
+### Changes
+
+**Previously merged but never shipped**
+- Fix MCP server startup crash on macOS: the vendored npm entrypoint imported a
+  package name its own pubspec did not declare, so the Dart fallback could not
+  compile (#46, #51)
+- Fall back to the Dart runtime when the native binary fails to spawn
+  (`ENOEXEC`, `Unknown system error -8`) instead of crashing (#49, #55)
+- Prefer the topmost route when resolving `tap`/`enter_text` by text or key, so
+  a pushed screen is no longer bypassed for an identical label on the screen
+  behind it (#53)
+- `hot_reload` / `hot_restart` now drive Flutter Tools' reloadSources and
+  hotRestart services, so code changes actually apply (#58)
+- Reliable synthetic input engine: single activation, correct timestamps, drag
+  hold, screenshot geometry, hittable flag (#59)
+- `press_key` passes modifiers through the server, and emits no character while
+  a modifier is held
+- Fixes across routes, hardware keys, focus/type_text/set_checkbox/hover, lazy
+  `scroll_to`, scroll direction and batch settle
+- Add a named server registry and a `--server` flag for CLI commands (#38)
+
+**Server robustness**
+- A malformed JSON-RPC frame no longer ends the session. Invalid UTF-8 raised a
+  stream-level error that terminated the process, and parse errors were dropped
+  silently because they carried a null id (#54)
+
+**npm package**
+- The vendored Dart sources had been frozen at v0.9.1 while `lib/` grew to 100
+  files, so the fallback ran a v0.2.0 server. They are now regenerated on every
+  publish, which restores `tap` by `ref` and by coordinates (#52)
+- The Dart fallback now works on Windows, names the Flutter SDK as the missing
+  prerequisite instead of failing with an unrelated import error, and reports
+  why `flutter pub get` failed instead of swallowing it (#45, #49, #50)
+- A failed binary download no longer leaves an empty file behind that made every
+  later install skip the download
+
+**Release tooling**
+- `release.sh` verifies the release is cut from `origin/main` and pushes
+  atomically, so a tag can no longer land on a commit that is not on the branch
+- `release.sh` refuses to publish the `TODO` CHANGELOG placeholder, which ten
+  previous releases shipped as their entire changelog
+- `release.sh` is now the only release entrypoint; three scripts that bypassed
+  it were removed
+
+---
+
 ## 0.9.36
 
 **Fix EACCES: ensure native binary has execute permission before spawn**
