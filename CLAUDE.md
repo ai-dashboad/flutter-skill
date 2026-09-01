@@ -114,11 +114,22 @@ The script handles everything: version bumps across all files, CHANGELOG entry, 
    - `README.md` - flutter_skill: ^X.Y.Z
 
 3. **Commit and Tag**
+
+   First confirm the release will be cut from `origin/main` — the tag is what
+   triggers the release workflow, so a tag that is not on `main` publishes from a
+   commit nobody can see. This is how v0.9.24 and v0.9.36 shipped the wrong tree.
+
    ```bash
+   git fetch origin main
+   git rev-parse main origin/main   # must print the same SHA twice
+
    git add -A
    git commit -m "chore: Release vX.Y.Z\n\n<description>"
    git tag vX.Y.Z
-   git push origin main --tags
+
+   # --atomic, never `--tags`: without it a rejected branch update still lets
+   # the tag through, and CI then publishes from an orphaned commit.
+   git push --atomic origin main refs/tags/vX.Y.Z
    ```
 
 4. **Verify**

@@ -47,13 +47,22 @@
 # - intellij-plugin/plugin.xml
 # - README.md
 
-# 3. Commit and tag
+# 3. Confirm the release is cut from origin/main.
+# The tag triggers the release workflow, so a tag that is not on main publishes
+# from a commit nobody can see — this is how v0.9.24 and v0.9.36 shipped.
+git fetch origin main
+git rev-parse main origin/main   # must print the same SHA twice
+
+# 4. Commit and tag
 git add -A
 git commit -m "chore: Release vX.Y.Z"
 git tag vX.Y.Z
-git push origin main --tags
 
-# 4. Wait for GitHub Actions
+# --atomic, never `--tags`: without it a rejected branch update still lets the
+# tag through, and CI then publishes from an orphaned commit.
+git push --atomic origin main refs/tags/vX.Y.Z
+
+# 5. Wait for GitHub Actions
 # Auto-publishes to: pub.dev, npm, VSCode, JetBrains, Homebrew
 ```
 
