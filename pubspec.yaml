@@ -10,7 +10,10 @@ executables:
 
 environment:
   sdk: '>=3.0.0 <4.0.0'
-  flutter: ">=3.0.0"
+  # 3.19 is the first release with SemanticsProperties.identifier, which
+  # element lookup by key relies on. The previous ">=3.0.0" was already
+  # inaccurate — WidgetsBinding.rootElement needs 3.9.
+  flutter: ">=3.19.0"
 
 dependencies:
   flutter:
