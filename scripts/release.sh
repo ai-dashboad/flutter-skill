@@ -59,7 +59,56 @@ fi
 echo -e "${BLUE}🚀 Releasing v$VERSION${NC}"
 echo ""
 
+# Step 0: Make sure the release will actually be cut from origin/main.
+#
+# The tag is what triggers the release workflow, so a tag that does not sit on
+# main means the published artifacts were built from a commit nobody can see.
+# This has already happened twice (v0.9.24, v0.9.36): the release was cut on a
+# stale local main, `git push origin main --tags` had the branch rejected but
+# still delivered the tag, CI published from the orphaned commit, and the
+# follow-up `pull --rebase` left the tag pointing at the pre-rebase copy.
+echo "📋 Verifying branch is in sync with origin..."
+
+CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
+if [ "$CURRENT_BRANCH" != "main" ]; then
+    echo -e "${RED}❌ Releases must be cut from main, but you are on '$CURRENT_BRANCH'.${NC}"
+    echo "   git switch main"
+    exit 1
+fi
+
+git fetch origin main --tags --quiet
+
+if git rev-parse --verify --quiet "refs/tags/v$VERSION" >/dev/null; then
+    echo -e "${RED}❌ Tag v$VERSION already exists.${NC}"
+    echo "   Pick a new version, or delete the tag if it was never published."
+    exit 1
+fi
+
+LOCAL=$(git rev-parse main)
+REMOTE=$(git rev-parse origin/main)
+if [ "$LOCAL" != "$REMOTE" ]; then
+    BEHIND=$(git rev-list --count main..origin/main)
+    AHEAD=$(git rev-list --count origin/main..main)
+    echo -e "${RED}❌ Local main is out of sync with origin/main${NC}"
+    echo "   behind: $BEHIND commit(s)   ahead: $AHEAD commit(s)"
+    echo ""
+    if [ "$BEHIND" -gt 0 ]; then
+        echo "   Releasing now would tag a commit that is not on origin/main, and the"
+        echo "   published build would silently omit those $BEHIND commit(s)."
+        echo ""
+        echo "   git pull --rebase origin main"
+    else
+        echo "   Push your local commits first so the tag lands on origin/main:"
+        echo ""
+        echo "   git push origin main"
+    fi
+    exit 1
+fi
+
+echo -e "  ${GREEN}✓ main matches origin/main ($(git rev-parse --short main))${NC}"
+
 # Step 1: Check for uncommitted changes
+echo ""
 echo "📋 Checking git status..."
 if [ -n "$(git status --porcelain)" ]; then
     echo -e "${YELLOW}⚠️  You have uncommitted changes:${NC}"
@@ -185,7 +234,25 @@ else
     echo -e "  ${YELLOW}⚠️  Edit CHANGELOG.md to add release details before confirming${NC}"
 fi
 
-# Step 4: Show changes and confirm
+# Step 4: Refuse to publish the placeholder.
+#
+# The entry above is generated with a TODO line and the warning to replace it is
+# easy to miss, so ten releases shipped "TODO: Add your changes here" as their
+# entire changelog. Block instead of warning.
+if awk -v v="## $VERSION" '
+    $0 == v {inside = 1; next}
+    inside && /^## / {exit}
+    inside && /TODO: Add your changes here/ {found = 1; exit}
+    END {exit !found}
+' CHANGELOG.md; then
+    echo ""
+    echo -e "${RED}❌ CHANGELOG.md still has the placeholder for $VERSION.${NC}"
+    echo "   Replace 'TODO: Add your changes here' with the actual changes,"
+    echo "   then run this script again."
+    exit 1
+fi
+
+# Step 5: Show changes and confirm
 echo ""
 echo "📋 Changes to be committed:"
 git add -u  # Only stage modified tracked files (not untracked)
@@ -198,20 +265,36 @@ if ! confirm "Commit, tag, and push v$VERSION?"; then
     exit 0
 fi
 
-# Step 5: Commit
+# Step 6: Commit
 echo ""
 echo "💾 Committing..."
 git commit -m "chore: Release v$VERSION
 
 $DESCRIPTION"
 
-# Step 6: Tag
+# Step 7: Tag
 echo "🏷️  Creating tag v$VERSION..."
 git tag "v$VERSION"
 
-# Step 7: Push
+# Step 8: Push
+#
+# --atomic makes the branch and the tag land together or not at all. Without it
+# git updates each ref independently, so a rejected branch update still lets the
+# tag through — which is what published v0.9.24 and v0.9.36 from commits that
+# were never on main. Only this release's tag is pushed; `--tags` would also
+# re-push unrelated local tags.
 echo "📤 Pushing to origin..."
-git push origin main --tags
+if ! git push --atomic origin main "refs/tags/v$VERSION"; then
+    echo ""
+    echo -e "${RED}❌ Push failed — nothing was published.${NC}"
+    echo "   The tag was NOT pushed, so the release workflow did not start."
+    echo ""
+    echo "   Removing the local tag so you can retry cleanly:"
+    git tag -d "v$VERSION"
+    echo ""
+    echo "   Then: git pull --rebase origin main && ./scripts/release.sh $VERSION \"$DESCRIPTION\""
+    exit 1
+fi
 
 echo ""
 echo -e "${GREEN}✅ Released v$VERSION successfully!${NC}"
