@@ -364,20 +364,55 @@ class FlutterMcpServer {
   }
 
   Future<void> run() async {
+    final done = Completer<void>();
+
+    // `allowMalformed: true` replaces invalid byte sequences with U+FFFD
+    // instead of throwing. A strict decoder raises FormatException on the
+    // *stream*, which bypasses the per-line try/catch below and kills the
+    // process — a single garbled byte from any client is enough to end the
+    // session. Malformed bytes now degrade into an ordinary parse error.
     stdin
-        .transform(utf8.decoder)
+        .transform(const Utf8Decoder(allowMalformed: true))
         .transform(const LineSplitter())
-        .listen((line) async {
-      if (line.trim().isEmpty) return;
-      try {
-        final request = jsonDecode(line);
-        if (request is Map<String, dynamic>) {
-          await _handleRequest(request);
+        .listen(
+      (line) async {
+        // A failure while handling one frame must never end the session, so
+        // every path here is guarded and answers with a JSON-RPC error.
+        try {
+          if (line.trim().isEmpty) return;
+          final dynamic request;
+          try {
+            request = jsonDecode(line);
+          } catch (e) {
+            _sendProtocolError(-32700, 'Parse error: $e');
+            return;
+          }
+          if (request is Map<String, dynamic>) {
+            await _handleRequest(request);
+          } else {
+            // Valid JSON, but not a JSON-RPC request object.
+            _sendProtocolError(
+                -32600, 'Invalid Request: expected a JSON object');
+          }
+        } catch (e) {
+          _sendProtocolError(-32603, 'Internal error: $e');
         }
-      } catch (e) {
-        _sendError(null, -32700, "Parse error: $e");
-      }
-    });
+      },
+      // Without an onError handler a stream-level error is unhandled and
+      // terminates the isolate. Keep reading instead.
+      onError: (Object e) {
+        _sendProtocolError(-32700, 'Parse error: $e');
+      },
+      onDone: () {
+        if (!done.isCompleted) done.complete();
+      },
+      cancelOnError: false,
+    );
+
+    // Keep `runServer` awaiting until stdin closes; otherwise it returns
+    // immediately and releases the single-instance lock while the server is
+    // still serving requests.
+    await done.future;
   }
 
   Future<void> _handleRequest(Map<String, dynamic> request) async {
@@ -1084,6 +1119,20 @@ class FlutterMcpServer {
   void _sendResult(dynamic id, dynamic result) {
     if (id == null) return;
     stdout.writeln(jsonEncode({"jsonrpc": "2.0", "id": id, "result": result}));
+  }
+
+  /// Reports an error that occurred before a request id could be read.
+  ///
+  /// [_sendError] drops null ids so that notifications stay unanswered, but
+  /// JSON-RPC 2.0 requires parse and invalid-request errors to be reported
+  /// with a null id. Without this the client sees silence and treats the
+  /// server as hung.
+  void _sendProtocolError(int code, String message) {
+    stdout.writeln(jsonEncode({
+      "jsonrpc": "2.0",
+      "id": null,
+      "error": {"code": code, "message": message},
+    }));
   }
 
   void _sendError(dynamic id, int code, String message) {
