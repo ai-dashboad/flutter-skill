@@ -39,6 +39,9 @@ function downloadBinary(url, destPath) {
         }
 
         if (response.statusCode !== 200) {
+          // createWriteStream has already created an empty file. Leaving it
+          // behind makes every later install believe the binary is present.
+          file.close(() => fs.unlink(destPath, () => {}));
           reject(new Error(`HTTP ${response.statusCode}`));
           return;
         }
@@ -68,7 +71,10 @@ function downloadBinary(url, destPath) {
           console.log('\n[flutter-skill] Native binary installed successfully!');
           resolve(destPath);
         });
-      }).on('error', reject);
+      }).on('error', (err) => {
+        file.close(() => fs.unlink(destPath, () => {}));
+        reject(err);
+      });
     };
 
     request(url);
@@ -84,7 +90,9 @@ async function main() {
 
   const localPath = path.join(binDir, `${binaryName}-v${VERSION}`);
 
-  if (fs.existsSync(localPath)) {
+  // A zero-byte file is the residue of an interrupted or 404'd download, not an
+  // installed binary. Treat it as absent so the download is retried.
+  if (fs.existsSync(localPath) && fs.statSync(localPath).size > 0) {
     // Re-apply execute permission in case a previous install left the binary
     // without +x (e.g. chmod failed silently inside a restricted npm sandbox).
     try { fs.chmodSync(localPath, 0o755); } catch (_) {}
