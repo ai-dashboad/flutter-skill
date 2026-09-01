@@ -151,35 +151,61 @@ function runNativeBinary(binaryPath) {
   process.on('SIGTERM', () => server.kill('SIGTERM'));
 }
 
+const isWindows = process.platform === 'win32';
+
+// The Flutter and Dart entrypoints on Windows are `.bat` scripts, which
+// CreateProcess cannot execute directly — spawn() fails with UNKNOWN or ENOENT
+// unless it goes through a shell. A shell does no argument quoting for us, so
+// anything containing whitespace has to be quoted by hand.
+function quoteArg(value) {
+  return isWindows && /[\s&|<>^()]/.test(value) ? `"${value}"` : value;
+}
+
 // Run using Dart
 function runWithDart() {
   const dartDir = path.join(__dirname, '..', 'dart');
   const serverScript = path.join(dartDir, 'bin', 'server.dart');
 
-  // Check if Dart is installed
-  try {
-    execSync('dart --version', { stdio: 'ignore' });
-  } catch (e) {
-    console.error('Error: Dart SDK not found. Please install Flutter/Dart first.');
+  if (!fs.existsSync(serverScript)) {
+    console.error('Error: Server script not found at:', serverScript);
+    console.error('The npm package looks incomplete — try reinstalling flutter-skill.');
+    process.exit(1);
+  }
+
+  // The vendored package depends on package:flutter, so `dart pub get` can
+  // never resolve it ("Because flutter_skill requires the Flutter SDK, version
+  // solving failed"). Checking only for Dart let that failure through and the
+  // run then died with a confusing "Couldn't resolve the package
+  // 'flutter_skill'" instead of naming the real prerequisite.
+  if (!checkFlutter()) {
+    console.error('Error: Flutter SDK not found.');
+    console.error('flutter-skill runs on the Flutter SDK — the Dart SDK alone cannot');
+    console.error('resolve its dependencies. Install Flutter and make sure it is on PATH:');
     console.error('  https://docs.flutter.dev/get-started/install');
     process.exit(1);
   }
 
-  // Check if server script exists
-  if (!fs.existsSync(serverScript)) {
-    console.error('Error: Server script not found at:', serverScript);
+  try {
+    execSync('dart --version', { stdio: 'ignore' });
+  } catch (e) {
+    console.error('Error: `dart` was not found on PATH, but `flutter` was.');
+    console.error('Add the Flutter SDK\'s bin directory to PATH so `dart` resolves too.');
     process.exit(1);
   }
 
-  // Get dependencies silently
+  // A failure here used to be swallowed, leaving the run to fail later with an
+  // unrelated-looking import error. Report it and stop.
   try {
-    const pubCmd = checkFlutter() ? 'flutter' : 'dart';
-    execSync(`${pubCmd} pub get`, {
+    execSync('flutter pub get', {
       cwd: dartDir,
       stdio: ['ignore', 'pipe', 'pipe']
     });
   } catch (e) {
-    // Ignore pub get errors
+    console.error('[flutter-skill] `flutter pub get` failed in', dartDir);
+    const details = ((e.stderr || '') + (e.stdout || '')).toString().trim();
+    if (details) console.error(details);
+    console.error('[flutter-skill] Cannot start without resolved dependencies.');
+    process.exit(1);
   }
 
   // Start with Dart
@@ -188,10 +214,27 @@ function runWithDart() {
     args.push('server');
   }
 
-  const dartArgs = ['run', serverScript, ...args];
-  const server = spawn('dart', dartArgs, {
-    cwd: dartDir,
-    stdio: 'inherit'
+  const dartArgs = ['run', serverScript, ...args].map(quoteArg);
+
+  // Same launch-failure handling as the native path: spawn() reports failures
+  // synchronously on some platforms and only via the 'error' event on others.
+  // There is no further fallback beyond Dart, so both paths exit with a
+  // diagnostic rather than crashing on an uncaught exception.
+  let server;
+  try {
+    server = spawn('dart', dartArgs, {
+      cwd: dartDir,
+      stdio: 'inherit',
+      shell: isWindows
+    });
+  } catch (err) {
+    console.error(`[flutter-skill] Failed to start the Dart runtime (${err.code || err.message})`);
+    process.exit(1);
+  }
+
+  server.on('error', (err) => {
+    console.error(`[flutter-skill] Failed to start the Dart runtime (${err.code || err.message})`);
+    process.exit(1);
   });
 
   server.on('close', (code) => {
