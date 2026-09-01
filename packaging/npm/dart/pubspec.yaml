@@ -1,9 +1,9 @@
-name: flutter_skill_npm
+name: flutter_skill
 description: Give your AI Agent eyes and hands inside your Flutter app.
-version: 0.9.1
-publish_to: 'none'
+version: 0.9.36
 homepage: https://github.com/ai-dashboad/flutter-skill
 repository: https://github.com/ai-dashboad/flutter-skill
+publish_to: 'none' # vendored copy — never published to pub.dev
 
 executables:
   flutter_skill: flutter_skill
@@ -15,12 +15,8 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
-  vm_service: ^14.0.0
+  vm_service: ">=14.0.0 <16.0.0"
   http: ^1.1.0
   path: ^1.8.0
   logging: ^1.2.0
-
-dev_dependencies:
-  flutter_test:
-    sdk: flutter
-  lints: ^3.0.0
+  crypto: ^3.0.0

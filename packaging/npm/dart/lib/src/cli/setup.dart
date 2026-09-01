@@ -1,39 +1,74 @@
 import 'dart:io';
 
-Future<void> runSetup(String projectPath) async {
+/// Sets up flutter_skill in the target project.
+///
+/// When [quiet] is true, all status output is suppressed — use this when
+/// calling from the MCP server to avoid polluting the JSON-RPC stdout stream.
+Future<void> runSetup(String projectPath, {bool quiet = false}) async {
+  void log(String msg) {
+    if (!quiet) print(msg);
+  }
+
   final pubspecFile = File('$projectPath/pubspec.yaml');
   final mainFile = File('$projectPath/lib/main.dart');
 
   if (!pubspecFile.existsSync()) {
-    print('Error: pubspec.yaml not found at $projectPath');
-    exit(1);
+    log('Error: pubspec.yaml not found at $projectPath');
+    if (!quiet) exit(1);
+    throw Exception('pubspec.yaml not found at $projectPath');
   }
 
   if (!mainFile.existsSync()) {
-    print('Error: lib/main.dart not found at $projectPath');
-    exit(1);
+    log('Error: lib/main.dart not found at $projectPath');
+    if (!quiet) exit(1);
+    throw Exception('lib/main.dart not found at $projectPath');
   }
 
-  print('Checking dependencies in ${pubspecFile.path}...');
+  log('Checking dependencies in ${pubspecFile.path}...');
   final pubspecContent = pubspecFile.readAsStringSync();
 
+  final flutterCmd = Platform.isWindows ? 'flutter.bat' : 'flutter';
+
   if (!pubspecContent.contains('flutter_skill:')) {
-    print('Adding flutter_skill dependency...');
+    log('Adding flutter_skill dependency...');
     final result = await Process.run(
-      'flutter',
+      flutterCmd,
       ['pub', 'add', 'flutter_skill'],
       workingDirectory: projectPath,
+      runInShell: Platform.isWindows,
     );
     if (result.exitCode != 0) {
-      print('Failed to add dependency: ${result.stderr}');
-      exit(1);
+      log('Failed to add dependency: ${result.stderr}');
+      if (!quiet) exit(1);
+      throw Exception('Failed to add dependency: ${result.stderr}');
     }
-    print('Dependency added.');
+    log('✅ flutter_skill dependency added.');
   } else {
-    print('Dependency flutter_skill already exists.');
+    // Dependency exists, check if it needs update
+    log('flutter_skill dependency found. Checking for updates...');
+
+    // Use flutter pub upgrade to get the latest version
+    final upgradeResult = await Process.run(
+      flutterCmd,
+      ['pub', 'upgrade', 'flutter_skill'],
+      workingDirectory: projectPath,
+      runInShell: Platform.isWindows,
+    );
+
+    if (upgradeResult.exitCode == 0) {
+      final output = upgradeResult.stdout.toString();
+      if (output.contains('Changed') || output.contains('flutter_skill')) {
+        log('✅ flutter_skill updated to latest version.');
+      } else {
+        log('✅ flutter_skill is already up to date.');
+      }
+    } else {
+      log('⚠️  Failed to check for updates: ${upgradeResult.stderr}');
+      log('Continuing with existing version...');
+    }
   }
 
-  print('Checking instrumentation in ${mainFile.path}...');
+  log('Checking instrumentation in ${mainFile.path}...');
   String mainContent = mainFile.readAsStringSync();
 
   bool changed = false;
@@ -44,7 +79,7 @@ Future<void> runSetup(String projectPath) async {
         "import 'package:flutter_skill/flutter_skill.dart';\nimport 'package:flutter/foundation.dart'; // For kDebugMode\n" +
             mainContent;
     changed = true;
-    print('Added imports.');
+    log('Added imports.');
   }
 
   // 2. Check Initialization
@@ -58,19 +93,18 @@ Future<void> runSetup(String projectPath) async {
           '\n  if (kDebugMode) {\n    FlutterSkillBinding.ensureInitialized();\n  }\n';
       mainContent = mainContent.replaceRange(end, end, injection);
       changed = true;
-      print('Added FlutterSkillBinding initialization.');
+      log('Added FlutterSkillBinding initialization.');
     } else {
-      print(
-          'Warning: Could not find "void main() {" to inject code. Manual setup required.');
+      log('Warning: Could not find "void main() {" to inject code. Manual setup required.');
     }
   }
 
   if (changed) {
     mainFile.writeAsStringSync(mainContent);
-    print('Updated lib/main.dart.');
+    log('Updated lib/main.dart.');
   } else {
-    print('No changes needed for lib/main.dart.');
+    log('No changes needed for lib/main.dart.');
   }
 
-  print('Setup complete.');
+  log('Setup complete.');
 }
