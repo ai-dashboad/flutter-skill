@@ -1,7 +1,7 @@
 {
   "name": "flutter-skill",
   "mcpName": "io.github.ai-dashboad/flutter-skill",
-  "version": "0.9.36",
+  "version": "0.9.37",
   "description": "MCP Server for app automation - Give your AI Agent eyes and hands inside any app (Flutter, React, Web, Native)",
   "main": "index.js",
   "bin": {

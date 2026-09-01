@@ -1,7 +1,7 @@
 <idea-plugin>
     <id>com.aidashboad.flutterskill</id>
     <name>Flutter Skill - AI App Automation</name>
-    <version>0.9.36</version>
+    <version>0.9.37</version>
     <vendor email="support@ai-dashboad.com" url="https://github.com/ai-dashboad/flutter-skill">ai-dashboad</vendor>
 
     <description><![CDATA[

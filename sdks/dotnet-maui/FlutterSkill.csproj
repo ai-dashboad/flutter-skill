@@ -6,7 +6,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <PackageId>FlutterSkill.Maui</PackageId>
-    <Version>0.9.36</Version>
+    <Version>0.9.37</Version>
     <Description>Flutter Skill AI E2E testing bridge for .NET MAUI apps. The WebSocket/JSON-RPC server core is platform-agnostic; MAUI UI automation requires the MAUI workload.</Description>
   </PropertyGroup>
   <ItemGroup>

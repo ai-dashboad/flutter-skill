@@ -1,7 +1,7 @@
 class FlutterSkill < Formula
   desc "MCP Server for Flutter app automation - AI Agent control for Flutter apps"
   homepage "https://github.com/ai-dashboad/flutter-skill"
-  version "0.9.36"
+  version "0.9.37"
   license "MIT"
 
   # Platform-specific native binaries
@@ -11,13 +11,13 @@ class FlutterSkill < Formula
   # which fall back to the Dart runtime automatically.
   on_macos do
     on_arm do
-      url "https://github.com/ai-dashboad/flutter-skill/releases/download/v0.9.36/flutter-skill-macos-arm64"
+      url "https://github.com/ai-dashboad/flutter-skill/releases/download/v0.9.37/flutter-skill-macos-arm64"
       sha256 "PLACEHOLDER_ARM64_SHA256"
     end
   end
 
   on_linux do
-    url "https://github.com/ai-dashboad/flutter-skill/releases/download/v0.9.36/flutter-skill-linux-x64"
+    url "https://github.com/ai-dashboad/flutter-skill/releases/download/v0.9.37/flutter-skill-linux-x64"
     sha256 "PLACEHOLDER_LINUX_SHA256"
   end
 
@@ -48,7 +48,7 @@ class FlutterSkill < Formula
       Note: Your Flutter app needs to include the flutter_skill package.
       Add to pubspec.yaml:
         dependencies:
-          flutter_skill: ^0.9.36
+          flutter_skill: ^0.9.37
     EOS
   end
 

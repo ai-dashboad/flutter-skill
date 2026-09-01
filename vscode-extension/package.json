@@ -2,7 +2,7 @@
   "name": "flutter-skill",
   "displayName": "Flutter Skill - AI App Automation",
   "description": "Give your AI Agent eyes and hands inside your Flutter app. Bridge between AI coding assistants (Claude Code, Cursor, Windsurf) and running Flutter applications with 25+ MCP tools for UI inspection, gestures, screenshots, and more.",
-  "version": "0.9.36",
+  "version": "0.9.37",
   "publisher": "ai-dashboad",
   "icon": "images/icon.png",
   "repository": {

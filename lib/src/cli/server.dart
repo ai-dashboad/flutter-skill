@@ -68,7 +68,7 @@ part 'tool_handlers/bug_report_handlers.dart';
 part 'tool_handlers/fixture_handlers.dart';
 part 'tool_handlers/explore_handlers.dart';
 
-const String currentVersion = '0.9.36';
+const String currentVersion = '0.9.37';
 
 /// Session information for multi-session support
 class SessionInfo {
