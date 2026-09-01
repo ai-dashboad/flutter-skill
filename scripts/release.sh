@@ -234,7 +234,25 @@ else
     echo -e "  ${YELLOW}⚠️  Edit CHANGELOG.md to add release details before confirming${NC}"
 fi
 
-# Step 4: Show changes and confirm
+# Step 4: Refuse to publish the placeholder.
+#
+# The entry above is generated with a TODO line and the warning to replace it is
+# easy to miss, so ten releases shipped "TODO: Add your changes here" as their
+# entire changelog. Block instead of warning.
+if awk -v v="## $VERSION" '
+    $0 == v {inside = 1; next}
+    inside && /^## / {exit}
+    inside && /TODO: Add your changes here/ {found = 1; exit}
+    END {exit !found}
+' CHANGELOG.md; then
+    echo ""
+    echo -e "${RED}❌ CHANGELOG.md still has the placeholder for $VERSION.${NC}"
+    echo "   Replace 'TODO: Add your changes here' with the actual changes,"
+    echo "   then run this script again."
+    exit 1
+fi
+
+# Step 5: Show changes and confirm
 echo ""
 echo "📋 Changes to be committed:"
 git add -u  # Only stage modified tracked files (not untracked)
@@ -247,18 +265,18 @@ if ! confirm "Commit, tag, and push v$VERSION?"; then
     exit 0
 fi
 
-# Step 5: Commit
+# Step 6: Commit
 echo ""
 echo "💾 Committing..."
 git commit -m "chore: Release v$VERSION
 
 $DESCRIPTION"
 
-# Step 6: Tag
+# Step 7: Tag
 echo "🏷️  Creating tag v$VERSION..."
 git tag "v$VERSION"
 
-# Step 7: Push
+# Step 8: Push
 #
 # --atomic makes the branch and the tag land together or not at all. Without it
 # git updates each ref independently, so a rejected branch update still lets the
