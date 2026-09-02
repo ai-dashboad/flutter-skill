@@ -10,7 +10,10 @@ executables:
 
 environment:
   sdk: '>=3.0.0 <4.0.0'
-  flutter: ">=3.0.0"
+  # The declared ">=3.0.0" was never accurate. Highest actual requirement in
+  # the source is Color.withValues (3.27); element lookup by key adds
+  # SemanticsProperties.identifier (3.19) and WidgetsBinding.rootElement (3.9).
+  flutter: ">=3.27.0"
 
 dependencies:
   flutter:

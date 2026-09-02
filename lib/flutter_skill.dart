@@ -1158,13 +1158,33 @@ class FlutterSkillBinding {
 
   // ==================== ELEMENT FINDING ====================
 
+  /// Resolves [key] against widget keys first, then semantics.
+  ///
+  /// Matching only `ValueKey<String>` leaves whole classes of widget
+  /// unreachable: design-system fields commonly wrap their inner editable in a
+  /// private `GlobalKey` and expose nothing but `Semantics(identifier: ...)`,
+  /// and keys built from ints or enums never matched at all.
+  ///
+  /// Candidates are collected in tiers so a real widget key always beats a
+  /// semantics annotation — a label is a human-readable string that can easily
+  /// collide with an unrelated widget's key.
   static Element? _findElementByKey(String key) {
-    final matches = <Element>[];
+    final byWidgetKey = <Element>[];
+    final bySemanticsIdentifier = <Element>[];
+    final bySemanticsLabel = <Element>[];
+
     void visit(Element element) {
       final widget = element.widget;
-      if (widget.key is ValueKey<String> &&
-          (widget.key as ValueKey<String>).value == key) {
-        matches.add(element);
+      final widgetKey = widget.key;
+      if (widgetKey is ValueKey && '${widgetKey.value}' == key) {
+        byWidgetKey.add(element);
+      } else if (widget is Semantics) {
+        final properties = widget.properties;
+        if (properties.identifier == key) {
+          bySemanticsIdentifier.add(element);
+        } else if (properties.label == key) {
+          bySemanticsLabel.add(element);
+        }
       }
       element.visitChildren(visit);
     }
@@ -1174,7 +1194,12 @@ class FlutterSkillBinding {
     if (binding.rootElement != null) {
       visit(binding.rootElement!);
     }
-    return _preferTopmostMatch(matches);
+
+    for (final tier in [byWidgetKey, bySemanticsIdentifier, bySemanticsLabel]) {
+      final match = _preferTopmostMatch(tier);
+      if (match != null) return match;
+    }
+    return null;
   }
 
   static Element? _findElementByText(String text) {
@@ -1214,6 +1239,11 @@ class FlutterSkillBinding {
     if (matches.isEmpty) return null;
     return matches.last;
   }
+
+  /// Exposes key resolution so its tie-breaking rules can be pinned by tests.
+  @visibleForTesting
+  static Element? findElementByKeyForTesting(String key) =>
+      _findElementByKey(key);
 
   static Element? _findElement({String? key, String? text}) {
     if (key != null) return _findElementByKey(key);
