@@ -48,9 +48,7 @@ class SemanticRefGenerator {
   /// Determine semantic role for a widget
   static String _getSemanticRole(Widget widget) {
     // Button family - all button-like widgets
-    if (widget is ElevatedButton ||
-        widget is TextButton ||
-        widget is OutlinedButton ||
+    if (widget is ButtonStyleButton ||
         widget is IconButton ||
         widget is FloatingActionButton ||
         widget is CupertinoButton) {
@@ -67,8 +65,11 @@ class SemanticRefGenerator {
 
     // Toggle family - switches and checkboxes
     if (widget is Switch ||
+        widget is SwitchListTile ||
         widget is Checkbox ||
+        widget is CheckboxListTile ||
         widget is Radio ||
+        widget is RadioListTile ||
         widget is CupertinoSwitch ||
         (widget is ToggleButtons)) {
       return 'toggle';

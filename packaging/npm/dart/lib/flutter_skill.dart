@@ -1409,17 +1409,22 @@ class FlutterSkillBinding {
     return found;
   }
 
+  /// Test hook for interaction-widget recognition.
+  @visibleForTesting
+  static bool supportsInteractionForTesting(Widget widget) =>
+      _isInteractiveWidget(widget);
+
   /// Check if a widget is interactive
   static bool _isInteractiveWidget(Widget widget) {
-    return widget is ElevatedButton ||
-        widget is TextButton ||
-        widget is OutlinedButton ||
+    return widget is ButtonStyleButton ||
         widget is IconButton ||
         widget is FloatingActionButton ||
         widget is TextField ||
         widget is TextFormField ||
         widget is Checkbox ||
+        widget is CheckboxListTile ||
         widget is Switch ||
+        widget is SwitchListTile ||
         widget is Slider ||
         widget is DropdownButton ||
         (widget is InkWell && widget.onTap != null) ||
@@ -1658,17 +1663,19 @@ class FlutterSkillBinding {
     });
   }
 
+  /// Test hook for the callback fallback used when pointer dispatch cannot
+  /// reach a widget.
+  @visibleForTesting
+  static void invokeFallbackCallbackForTesting(Element element) =>
+      _tryInvokeCallback(element);
+
   /// Directly invoke the onPressed/onTap callback of a widget — used only
   /// when the element is not reachable by a pointer (see [_isHittableAt]).
   static void _tryInvokeCallback(Element element) {
     if (!element.mounted) return;
     final widget = element.widget;
 
-    if (widget is ElevatedButton && widget.onPressed != null) {
-      widget.onPressed!();
-    } else if (widget is TextButton && widget.onPressed != null) {
-      widget.onPressed!();
-    } else if (widget is OutlinedButton && widget.onPressed != null) {
+    if (widget is ButtonStyleButton && widget.onPressed != null) {
       widget.onPressed!();
     } else if (widget is IconButton && widget.onPressed != null) {
       widget.onPressed!();
@@ -1678,6 +1685,14 @@ class FlutterSkillBinding {
       widget.onTap!();
     } else if (widget is GestureDetector && widget.onTap != null) {
       widget.onTap!();
+    } else if (widget is CheckboxListTile && widget.onChanged != null) {
+      widget.onChanged!(!(widget.value ?? false));
+    } else if (widget is SwitchListTile && widget.onChanged != null) {
+      widget.onChanged!(!(widget.value ?? false));
+    } else if (widget is Checkbox && widget.onChanged != null) {
+      widget.onChanged!(!(widget.value ?? false));
+    } else if (widget is Switch && widget.onChanged != null) {
+      widget.onChanged!(!(widget.value ?? false));
     }
     // For other widget types, the pointer dispatch should handle it
   }
@@ -2646,6 +2661,11 @@ class FlutterSkillBinding {
     return results;
   }
 
+  /// Test hook for structured widget discovery.
+  @visibleForTesting
+  static Map<String, dynamic> inspectInteractiveElementsForTesting() =>
+      _findInteractiveElementsStructured();
+
   /// Enhanced interactive elements discovery for better automation with semantic ref ID system.
   /// Returns structured data with semantic ref IDs, actions, bounds, and state information.
   static Map<String, dynamic> _findInteractiveElementsStructured() {
@@ -2657,6 +2677,7 @@ class FlutterSkillBinding {
       String? type;
       String? text;
       String? key;
+      String? identifier;
       String? label;
       String? tooltip;
       List<String> actions = [];
@@ -2666,11 +2687,17 @@ class FlutterSkillBinding {
       if (widget.key is ValueKey<String>) {
         key = (widget.key as ValueKey<String>).value;
       }
+      element.visitAncestorElements((ancestor) {
+        final ancestorWidget = ancestor.widget;
+        if (ancestorWidget is Semantics) {
+          final value = ancestorWidget.properties.identifier;
+          if (value != null && value.isNotEmpty) identifier = value;
+        }
+        return identifier == null;
+      });
 
       // Identify widget type and available actions
-      if (widget is ElevatedButton ||
-          widget is TextButton ||
-          widget is OutlinedButton ||
+      if (widget is ButtonStyleButton ||
           widget is IconButton ||
           widget is FloatingActionButton) {
         type = widget.runtimeType.toString();
@@ -2695,11 +2722,7 @@ class FlutterSkillBinding {
               btnTooltip.isNotEmpty) {
             text = btnTooltip;
           }
-        } else if (widget is ElevatedButton) {
-          enabled = widget.onPressed != null;
-        } else if (widget is TextButton) {
-          enabled = widget.onPressed != null;
-        } else if (widget is OutlinedButton) {
+        } else if (widget is ButtonStyleButton) {
           enabled = widget.onPressed != null;
         }
         state['enabled'] = enabled;
@@ -2734,11 +2757,23 @@ class FlutterSkillBinding {
         final currentValue = _getTextFieldValueByElement(element);
         state['value'] = currentValue ?? '';
         state['enabled'] = true; // TextFields are typically enabled
+      } else if (widget is CheckboxListTile) {
+        type = 'CheckboxListTile';
+        text = _extractTextFrom(element);
+        actions = ['tap'];
+        state['value'] = widget.value ?? false;
+        state['enabled'] = widget.onChanged != null;
       } else if (widget is Checkbox) {
         type = 'Checkbox';
         actions = ['tap'];
 
         state['value'] = widget.value ?? false;
+        state['enabled'] = widget.onChanged != null;
+      } else if (widget is SwitchListTile) {
+        type = 'SwitchListTile';
+        text = _extractTextFrom(element);
+        actions = ['tap'];
+        state['value'] = widget.value;
         state['enabled'] = widget.onChanged != null;
       } else if (widget is Switch) {
         type = 'Switch';
@@ -2799,6 +2834,7 @@ class FlutterSkillBinding {
 
         // Add optional fields
         if (key != null && key.isNotEmpty) elementEntry['key'] = key;
+        if (identifier != null) elementEntry['identifier'] = identifier;
         if (text != null && text.isNotEmpty) elementEntry['text'] = text;
         if (label != null && label.isNotEmpty) elementEntry['label'] = label;
         if (tooltip != null) elementEntry['tooltip'] = tooltip;
